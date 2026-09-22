@@ -38,7 +38,8 @@ test('原生对象、纹理尺寸、Undo 与无插件往返保存', async ({ pag
   await page.evaluate(async () => {
     await window.Blockbench.mcuiStudio.newProject();
   });
-  await expect(page.getByText('Figma 风格', { exact: true })).toBeAttached();
+  await expect(page.locator('[toolbar_item=mcui_interaction]')).toBeAttached();
+  await expect(page.locator('#panel_mcui_studio')).toHaveCount(0);
   const initial = await page.evaluate(async () => {
     const app = window.Blockbench.mcuiStudio.getStudio();
     const root = app.state.doc.roots[0];
@@ -72,9 +73,7 @@ test('原生对象、纹理尺寸、Undo 与无插件往返保存', async ({ pag
     };
   });
   expect(initial).toMatchObject({ count: 1, width: 80, height: 40, texWidth: 80, texHeight: 40 });
-  await page.getByRole('button', { name: /属性/ }).click();
-  await page.getByLabel('九宫格模式', { exact: true }).scrollIntoViewIfNeeded();
-  await expect(page.getByLabel('九宫格模式', { exact: true })).toBeVisible();
+  await expect(page.locator('#panel_element')).toBeVisible();
   await page.screenshot({ path: '.cache/mcui-studio.png' });
   await page.evaluate(() => window.Undo.undo());
   await expect
@@ -118,9 +117,17 @@ test('二维交互、视图切换和完整卸载', async ({ page }) => {
     await page.evaluate(() => window.Cube.all[0].to[0] - window.Cube.all[0].from[0]),
   ).toBeGreaterThan(before.w);
   expect(await page.evaluate(() => window.Undo.history.length)).toBe(before.undo + 1);
-  await page.getByLabel('视图', { exact: true }).selectOption('3d');
+  await page.locator('[toolbar_item=mcui_view] .bb-select').click();
+  await page
+    .locator('.contextMenu li')
+    .filter({ hasText: /^3D 透视$/ })
+    .click();
   expect(await page.evaluate(() => window.Preview.selected.isOrtho)).toBe(false);
-  await page.getByLabel('视图', { exact: true }).selectOption('2d');
+  await page.locator('[toolbar_item=mcui_view] .bb-select').click();
+  await page
+    .locator('.contextMenu li')
+    .filter({ hasText: /^2D 顶视图$/ })
+    .click();
   expect(await page.evaluate(() => window.Preview.selected.isOrtho)).toBe(true);
   await page.evaluate(() => window.Plugins.registered.mcui_studio.onunload());
   await expect(page.locator('.mcui-overlay')).toHaveCount(0);
@@ -229,7 +236,7 @@ test('源图使用原生绘画会话，应用后更新且可撤销', async ({ pa
     app.makeNine(id);
     app.paint(id);
   });
-  await expect(page.locator('.mcui-source-session')).toBeVisible();
+  await expect(page.locator('[toolbar_item=mcui_source_apply]')).toBeVisible();
   await page.waitForFunction(
     () => window.Project?.format?.id === 'image' && window.Texture.all[0]?.layers?.length > 0,
   );
@@ -239,9 +246,14 @@ test('源图使用原生绘画会话，应用后更新且可撤销', async ({ pa
     t.layers[0].ctx.fillRect(0, 0, t.width, t.height);
     t.updateChangesAfterEdit();
   });
-  await page.getByRole('button', { name: '应用到 UI', exact: true }).click();
-  await expect(page.locator('.mcui-source-session')).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => window.Project.format.id)).toBe('free');
+  await page.locator('[toolbar_item=mcui_source_apply]').click();
+  await expect(page.locator('[toolbar_item=mcui_source_apply]')).not.toBeVisible();
+  await page.waitForFunction(
+    () =>
+      window.Project?.format?.id === 'free' &&
+      (window as any).ModelProject.all.length === 1 &&
+      window.Texture.all[0]?.ctx,
+  );
   expect(
     await page.evaluate(() => Array.from(window.Texture.all[0].ctx.getImageData(0, 0, 1, 1).data)),
   ).toEqual([51, 51, 255, 255]);
@@ -261,7 +273,7 @@ test('无插件修改不被覆盖，重新启用后采用当前结果', async ({
     window.Plugins.registered.mcui_studio.onunload();
     window.Cube.all[0].from[0] += 10;
     window.Cube.all[0].to[0] += 10;
-    window.Plugins.registered.mcui_studio.onload();
+    window.Plugins.registered.mcui_studio.runOnLoad();
   });
   await page.waitForFunction(
     () =>
@@ -416,6 +428,314 @@ for (const method of ['button', 'double-click'] as const) {
     expect(await page.evaluate(() => !!(window as any).ModelLoader.loaders.mcui_studio)).toBe(
       false,
     );
-    expect(await page.evaluate(() => window.Project.format.id)).toBe('free');
+    expect(await page.evaluate(() => window.Project?.format?.id)).toBe('free');
   });
 }
+
+test('原生大纲选中后自动打开元素标签；表达式草稿原子提交', async ({ page }) => {
+  await start(page);
+  const id = await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    window.BarItems.mcui_add_layer.trigger();
+    const app = window.Blockbench.mcuiStudio.getStudio();
+    return app.state.selection[0];
+  });
+  const input = page.locator('#panel_element input[id="cube__mcui_size_w"]');
+  await expect(input).toBeVisible();
+  await expect(page.locator('#panel_mcui_studio')).toHaveCount(0);
+  await page.evaluate(() => {
+    const panels = (window as any).Interface.Panels;
+    panels.transform.selectTab(panels.transform);
+    window.Blockbench.mcuiStudio.getStudio().select([]);
+  });
+  await page.locator(`[id="${id}"] > .outliner_object`).click();
+  await expect(input).toBeVisible();
+  const before = await page.evaluate(() => window.Undo.history.length);
+  await input.fill('100% -');
+  expect(await page.evaluate(() => window.Cube.all[0].size(0))).toBe(32);
+  await input.press('Enter');
+  expect(await page.evaluate(() => window.Undo.history.length)).toBe(before);
+  await input.fill('100% - 16px');
+  await input.press('Enter');
+  expect(await page.evaluate(() => window.Cube.all[0].size(0))).toBe(304);
+  expect(await page.evaluate(() => window.Undo.history.length)).toBe(before + 1);
+  await page.evaluate(() => window.Undo.undo());
+  await expect(input).toHaveValue('32px');
+  await page.screenshot({ path: '.cache/mcui-native-properties.png' });
+});
+
+test('原生大纲排序、换父级和撤销同步规则与 Y', async ({ page }) => {
+  await start(page);
+  const result = await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('layer', root),
+      b = app.add('layer', root),
+      frame = app.add('frame');
+    const lookup = (id: string) =>
+      (window as any).OutlinerNode.uuids[app.state.doc.bindings[id].elementId];
+    app.select([b]);
+    (window as any).moveOutlinerSelectionTo(lookup(b), lookup(a), -1, { event: { altKey: false } });
+    const order = [...app.state.doc.nodes[root].children],
+      y = [lookup(b).to[1], lookup(a).to[1]],
+      x = lookup(b).from[0];
+    const history = window.Undo.history.length;
+    (window as any).moveOutlinerSelectionTo(lookup(b), lookup(frame), 0, {
+      event: { altKey: false },
+    });
+    return {
+      a,
+      b,
+      root,
+      frame,
+      order,
+      y,
+      x,
+      afterX: lookup(b).from[0],
+      parent: app.state.doc.nodes[b].parent,
+      suspended: !!app.state.doc.nodes[b].suspended,
+      steps: window.Undo.history.length - history,
+      error: app.state.error,
+    };
+  });
+  expect(result.order).toEqual([result.b, result.a]);
+  expect(result.y[0]).toBeLessThan(result.y[1]);
+  expect(result.parent).toBe(result.frame);
+  expect(result.afterX).toBe(result.x);
+  expect(result.suspended).toBe(false);
+  expect(result.steps).toBe(1);
+  expect(result.error).toBeNull();
+  await page.evaluate(() => window.Undo.undo());
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) => window.Blockbench.mcuiStudio.getStudio().state.doc.nodes[id].parent,
+        result.b,
+      ),
+    )
+    .toBe(result.root);
+});
+
+test('原生 Option 复制保留九宫格规则并生成独立贴图', async ({ page }) => {
+  await start(page);
+  const result = await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0],
+      id = app.add('layer', root);
+    app.makeNine(id);
+    app.select([id]);
+    const cube = window.Cube.all[0];
+    (window as any).moveOutlinerSelectionTo(cube, cube.parent, 0, { event: { altKey: true } });
+    const nodes = Object.values(app.state.doc.nodes).filter(
+      (n: any) => n.kind === 'layer',
+    ) as any[];
+    return {
+      count: nodes.length,
+      kinds: nodes.map((n) => n.content.kind),
+      sources: nodes.map((n) => n.content.source),
+      textures: nodes.map((n) => app.state.doc.bindings[n.id].textureId),
+      paused: nodes.some((n) => n.suspended),
+      error: app.state.error,
+    };
+  });
+  expect(result.count).toBe(2);
+  expect(result.kinds).toEqual(['nine-slice', 'nine-slice']);
+  expect(result.sources[0]).toBe(result.sources[1]);
+  expect(result.textures[0]).not.toBe(result.textures[1]);
+  expect(result.paused).toBe(false);
+  expect(result.error).toBeNull();
+});
+
+test('原生多选属性批量提交，循环布局回滚且不污染普通项目', async ({ page }) => {
+  await start(page);
+  const ids = await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('layer', root),
+      b = app.add('layer', root);
+    app.select([a, b]);
+    return { root, a, b };
+  });
+  const width = page.locator('#panel_element input[id="cube__mcui_size_w"]');
+  await expect(width).toBeVisible();
+  await width.fill('64px');
+  await width.press('Enter');
+  expect(await page.evaluate(() => window.Cube.all.map((c: any) => c.size(0)))).toEqual([64, 64]);
+  await page.evaluate(({ root, a }) => {
+    const app = window.Blockbench.mcuiStudio.getStudio();
+    app.update(a, (n: any) => {
+      n.layout.width = { kind: 'fill' };
+    });
+    app.select([root]);
+  }, ids);
+  const frameWidth = page.locator('#panel_element input[id="group__mcui_size_w"]');
+  await expect(frameWidth).toBeVisible();
+  const before = await page.evaluate(() => window.Undo.history.length);
+  await frameWidth.fill('hug');
+  await frameWidth.press('Enter');
+  expect(await page.evaluate(() => window.Undo.history.length)).toBe(before);
+  expect(
+    await page.evaluate(
+      (id) => window.Blockbench.mcuiStudio.getStudio().state.doc.nodes[id].layout.width.kind,
+      ids.root,
+    ),
+  ).toBe('fixed');
+  await frameWidth.press('Escape');
+  const model = await page.evaluate(() =>
+    window.Codecs.project.compile({ raw: true, bitmaps: true }),
+  );
+  expect(model.elements.some((e: any) => Object.keys(e).some((k) => k.startsWith('mcui_')))).toBe(
+    false,
+  );
+  await page.evaluate(() => {
+    window.setupProject(window.Formats.free);
+    new window.Cube({ name: 'Ordinary' }).init().select();
+  });
+  await expect(page.locator('#panel_element .form_bar_cube__mcui_size')).not.toBeVisible();
+});
+
+test('原生框选复用宿主框，过滤锁定对象且保留框选历史', async ({ page }) => {
+  await start(page);
+  const points = await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('layer', root),
+      b = app.add('layer', root);
+    app.update(b, (n: any) => {
+      n.layout.offset.x = 60;
+      n.locked = true;
+    });
+    app.select([]);
+    const p = window.Preview.selected,
+      r = p.canvas.getBoundingClientRect();
+    const project = (x: number, z: number) => {
+      const v = new (window as any).THREE.Vector3(x, 0, z).project(p.camera);
+      return { x: r.left + ((v.x + 1) * r.width) / 2, y: r.top + ((1 - v.y) * r.height) / 2 };
+    };
+    return { from: project(0, 0), to: project(105, 48), a, b };
+  });
+  await page.mouse.move(points.from.x, points.from.y);
+  await page.mouse.down();
+  await page.mouse.move(points.to.x, points.to.y, { steps: 5 });
+  await expect(page.locator('#selection_box')).toBeAttached();
+  await page.mouse.up();
+  await expect
+    .poll(() => page.evaluate(() => window.Blockbench.mcuiStudio.getStudio().state.selection))
+    .toEqual([points.a]);
+});
+
+test('紧凑原生标签：两行坐标尺寸、字段说明和百分比位置', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    window.BarItems.mcui_add_layer.trigger();
+  });
+  const pos = page.locator('#panel_element input[aria-label="UI X 偏移"]:visible'),
+    width = page.locator('#panel_element input[aria-label="UI 宽度"]:visible');
+  await expect(pos).toBeVisible();
+  await expect(width).toBeVisible();
+  expect(
+    await page.locator('#panel_element .form_bar_cube__mcui_size').getAttribute('title'),
+  ).toContain('100% - 16px');
+  const y = page.locator('#panel_element input[aria-label="UI Y 偏移"]:visible'),
+    height = page.locator('#panel_element input[aria-label="UI 高度"]:visible');
+  expect(Math.abs((await pos.boundingBox())!.y - (await y.boundingBox())!.y)).toBeLessThan(1);
+  expect(Math.abs((await width.boundingBox())!.y - (await height.boundingBox())!.y)).toBeLessThan(
+    1,
+  );
+  await pos.fill('50% - 8px');
+  await pos.press('Enter');
+  expect(await page.evaluate(() => window.Cube.all[0].from[0])).toBe(152);
+  await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
+  await expect(page.locator('#panel_mcui_layout')).toBeVisible();
+  await page.locator('.panel_handle[panel_id="mcui_content"]').click();
+  await expect(page.locator('#panel_mcui_content')).toBeVisible();
+  await page.evaluate(() => {
+    const panels = (window as any).Interface.Panels;
+    panels.transform.selectTab(panels.element);
+  });
+  await page.screenshot({ path: '.cache/mcui-native-compact.png' });
+});
+
+test('原生双轴批量修改只更新编辑的轴', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('layer', root),
+      b = app.add('layer', root);
+    app.update(b, (n: any) => {
+      n.layout.height = { kind: 'fixed', value: 48 };
+    });
+    app.select([a, b]);
+  });
+  const width = page.locator('#panel_element input[aria-label="UI 宽度"]:visible');
+  await expect(width).toBeVisible();
+  await width.fill('64px');
+  await width.press('Enter');
+  expect(
+    await page.evaluate(() => window.Cube.all.map((c: any) => [c.size(0), c.size(2)])),
+  ).toEqual([
+    [64, 32],
+    [64, 48],
+  ]);
+});
+
+test('原生 Frame 复制继承布局尺寸和子图层规则', async ({ page }) => {
+  await start(page);
+  const result = await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const frame = app.add('frame', root),
+      child = app.add('layer', frame);
+    app.makeNine(child);
+    app.update(frame, (n: any) => {
+      n.frame.direction = 'row';
+      n.frame.padding = [4, 4, 4, 4];
+    });
+    app.update(child, (n: any) => {
+      n.layout.width = { kind: 'fill' };
+    });
+    app.select([frame]);
+    const node = (window as any).OutlinerNode.uuids[app.state.doc.bindings[frame].elementId];
+    (window as any).moveOutlinerSelectionTo(node, node.parent, 0, { event: { altKey: true } });
+    const frames = app.state.doc.nodes[root].children.map((id: string) => app.state.doc.nodes[id]);
+    return {
+      frames: frames.map((n: any) => ({
+        kind: n.kind,
+        width: n.rect.width,
+        direction: n.frame.direction,
+        childKind: app.state.doc.nodes[n.children[0]].content.kind,
+      })),
+      textures: window.Texture.all.length,
+      error: app.state.error,
+    };
+  });
+  expect(result.frames).toEqual([
+    { kind: 'frame', width: 160, direction: 'row', childKind: 'nine-slice' },
+    { kind: 'frame', width: 160, direction: 'row', childKind: 'nine-slice' },
+  ]);
+  expect(result.textures).toBe(2);
+  expect(result.error).toBeNull();
+});
+
+test('内容预览使用原生对话框，取消不修改参数', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio();
+    const id = app.add('layer', app.state.doc.roots[0]);
+    app.makeNine(id);
+    window.BarItems.mcui_content_preview.trigger();
+  });
+  await expect(page.locator('#mcui_content_preview canvas')).toBeVisible();
+  const before = await page.evaluate(() => window.Undo.history.length);
+  await page.evaluate(() => (window as any).Dialog.open.cancel());
+  expect(await page.evaluate(() => window.Undo.history.length)).toBe(before);
+});

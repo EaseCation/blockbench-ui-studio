@@ -1,6 +1,6 @@
 import type { Studio } from '../../application/studio';
 import { InteractionMachine } from '../../application/interaction';
-import { bounds, contains, distances } from '../../domain/geometry';
+import { bounds, distances } from '../../domain/geometry';
 import type { Handle, Id, Point, Rect } from '../../domain/types';
 import { clearOverlay, drawOverlay } from '../../presentation/overlay';
 import { Disposables, type HostObject, type HostRuntime } from './runtime';
@@ -51,13 +51,32 @@ export class ViewportController {
       name: 'UI 选择',
       icon: 'ads_click',
       transformerMode: 'hidden',
-      selectElements: true,
+      toolbar: 'main_tools',
+      selectElements: false,
+      onCanvasClick: (data: HostObject) => this.canvasClick(data),
+      onCanvasMouseMove: (data: HostObject) => {
+        if (!this.active()) return;
+        this.hover = data?.element ? this.nodeId(data.element.uuid) : null;
+        if (data?.event) this.alt = data.event.altKey;
+        this.draw();
+      },
       modes: ['edit'],
       condition: () => !!bb.Project?.unhandled_root_fields?.mcui_studio,
     });
     this.disposables.add(this.tool);
     this.machine = new InteractionMachine(studio, { pan: (dx, dy) => this.pan(dx, dy) });
     this.disposables.add(studio.subscribe(() => this.draw()));
+    this.disposables.add(
+      bb.Blockbench.on('finish_selection_change', () => {
+        if (!this.active()) return;
+        for (const object of [...bb.Outliner.selected]) {
+          const id = this.nodeId(object.uuid),
+            n = id ? studio.state.scene.nodes[id] : undefined;
+          if (!n || n.locked || !n.visible) object.unselect();
+        }
+        bb.updateSelection();
+      }),
+    );
     this.disposables.add(
       bb.Blockbench.on('render_frame', () => {
         this.attach();
@@ -200,14 +219,36 @@ export class ViewportController {
       height: Math.abs(a.y - b.y),
     };
   }
-  private hit(point: Point): Id | null {
-    const { doc, scene } = this.studio.state;
-    for (const id of [...scene.order].reverse()) {
-      const n = scene.nodes[id]!;
-      if (doc.nodes[id]!.kind === 'layer' && n.visible && !n.locked && contains(n.rect, point))
-        return id;
+  private nodeId(uuid: string): Id | null {
+    const id = Object.entries(this.studio.state.doc.bindings).find(
+      ([, b]) => b.elementId === uuid,
+    )?.[0];
+    const n = id ? this.studio.state.scene.nodes[id] : undefined;
+    return n?.visible && !n.locked ? id! : null;
+  }
+  private hit(event: MouseEvent, preview: HostObject): Id | null {
+    const data = preview.raycast(event);
+    return data?.element ? this.nodeId(data.element.uuid) : null;
+  }
+  private canvasClick(data: HostObject) {
+    if (!this.active()) return;
+    const e = data.event as PointerEvent,
+      p = this.bb.Preview.selected;
+    if (e.button !== 0 || this.space || e.ctrlKey || e.metaKey) return;
+    if (data.element && this.nodeId(data.element.uuid)) {
+      this.pointerId = e.pointerId;
+      p.node.setPointerCapture(e.pointerId);
+      this.machine.down(this.input(e, p));
+    } else {
+      if (!e.shiftKey) this.studio.select([]);
+      // Only the registered UI tool is toggled; the native marquee owns its DOM and history.
+      this.tool.selectElements = true;
+      try {
+        p.startSelRect(e);
+      } finally {
+        this.tool.selectElements = false;
+      }
     }
-    return null;
   }
   private input(e: PointerEvent, preview: HostObject) {
     const world = this.world(e.clientX, e.clientY, preview);
@@ -218,7 +259,7 @@ export class ViewportController {
       shift: e.shiftKey,
       alt: e.altKey,
       space: this.space,
-      hit: this.hit(world),
+      hit: this.hit(e, preview),
       handle: (e.target as HTMLElement).getAttribute?.('data-mcui-handle') as Handle | undefined,
     };
   }
@@ -262,6 +303,8 @@ export class ViewportController {
             e.button === 2
           )
             return;
+          const handle = (e.target as HTMLElement).getAttribute?.('data-mcui-handle');
+          if (!handle && e.button === 0 && !this.space) return;
           stop(e);
           (document.activeElement as HTMLElement)?.blur?.();
           p.controls.stopMovement?.();
@@ -278,7 +321,7 @@ export class ViewportController {
         ((e: MouseEvent) => {
           if (
             this.navigationActive() &&
-            (this.active() || e.button === 1 || this.space) &&
+            (this.pointerId !== null || e.button === 1 || this.space) &&
             e.button !== 2
           )
             stop(e);
@@ -289,7 +332,7 @@ export class ViewportController {
         p.node,
         'pointermove',
         ((e: PointerEvent) => {
-          if (!this.navigationActive()) return;
+          if (!this.navigationActive() || this.pointerId === null) return;
           const point = this.input(e, p);
           this.alt = e.altKey;
           this.hover = point.hit;
@@ -337,7 +380,7 @@ export class ViewportController {
         ((e: MouseEvent) => {
           if (!this.active()) return;
           stop(e);
-          const id = this.hit(this.world(e.clientX, e.clientY, p));
+          const id = this.hit(e, p);
           if (id) {
             this.studio.select([id]);
             this.studio.paint(id);
@@ -378,7 +421,7 @@ export class ViewportController {
     if (
       typing(e.target) ||
       !this.navigationActive() ||
-      !['preview', 'mcui_studio', 'outliner'].includes(this.bb.Prop.active_panel)
+      !['preview', 'outliner', 'element', 'transform'].includes(this.bb.Prop.active_panel)
     )
       return;
     if (e.code === 'Space') {
@@ -393,6 +436,11 @@ export class ViewportController {
     }
     if (!down) return;
     if (e.key === 'Escape') {
+      const p = this.bb.Preview.selected;
+      if (p.selection.sr_move_f) {
+        this.bb.Undo.cancelSelection(true);
+        p.stopSelRect(e);
+      }
       this.machine.cancel();
       this.pointerId = null;
       this.draw();
@@ -429,7 +477,7 @@ export class ViewportController {
         width: p.width,
         height: p.height,
         selection: selection ? this.screenRect(selection, p) : null,
-        marquee: this.machine.marquee ? this.screenRect(this.machine.marquee, p) : null,
+        marquee: null,
         measurements: ms.map((m) => ({
           ...m,
           from: this.screen(m.from, p),

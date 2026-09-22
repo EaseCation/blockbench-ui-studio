@@ -38,6 +38,14 @@ export interface HostRuntime {
   updateInterface: HostObject;
   unselectAllElements: HostObject;
   guid: HostObject;
+  Property: HostObject;
+  FormElement: HostObject;
+  InputForm: HostObject;
+  Interface: HostObject;
+  Toolbars: HostObject;
+  BarSelect: HostObject;
+  Dialog: HostObject;
+  BARS: HostObject;
 }
 export const hostRuntime = (): HostRuntime => window as unknown as HostRuntime;
 export function capabilities(bb: HostRuntime): string[] {
@@ -52,6 +60,9 @@ export function capabilities(bb: HostRuntime): string[] {
     'Tool',
     'SharedActions',
     'ModelLoader',
+    'Property',
+    'FormElement',
+    'Toolbars',
   ] as const)
     if (!bb[name]) missing.push(name);
   // Undo is a project-dependent getter and is intentionally undefined on the welcome screen.

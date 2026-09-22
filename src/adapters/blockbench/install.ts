@@ -3,7 +3,8 @@ import { clone, descendants, topSelection } from '../../domain/document';
 import { createNode, fixed } from '../../domain/types';
 import type { UiDocument } from '../../domain/types';
 import { imagePort, blobImage } from '../../platform/browser/images';
-import { mountWorkbench } from '../../presentation/workbench';
+import { PropertyBridge } from './properties';
+import { showContentPreview } from './preview-dialog';
 import { NativeHost, METADATA_KEY } from './native-host';
 import { ViewportController, type ViewMemory } from './viewport';
 import { capabilities, Disposables, type HostObject, type HostRuntime } from './runtime';
@@ -21,75 +22,35 @@ export function install(bb: HostRuntime) {
     apps = new Map<string, { app: Studio; host: NativeHost }>();
   const viewMemory = new Map<string, ViewMemory>();
   let viewport: ViewportController | null = null,
-    unmount: (() => void) | null = null,
     current: Studio | null = null,
     token = 0;
   let internalClipboard: UiDocument | null = null,
     lastPaste = 0;
-  let sourceBar: HTMLElement | null = null;
-  const panel = new bb.Panel('mcui_studio', {
-    name: 'MC UI Studio',
-    icon: 'dashboard_customize',
-    growable: true,
-    resizable: true,
-    min_height: 200,
-    default_position: { slot: 'right_bar', height: 540 },
-    condition: () => !!bb.Project?.unhandled_root_fields?.[METADATA_KEY],
-  });
-  life.add(panel);
+  let sourceEdit: {
+    projectId: string;
+    apply: () => Promise<void>;
+    cancel: () => void;
+    busy: boolean;
+  } | null = null;
   function focused() {
     const e = document.activeElement;
     return e instanceof HTMLElement && !!e.closest('input,textarea,select,[contenteditable=true]');
   }
   function sourceSession(apply: () => Promise<void>, cancel: () => void) {
-    sourceBar?.remove();
-    sourceBar = document.createElement('div');
-    sourceBar.className = 'mcui-source-session';
-    Object.assign(sourceBar.style, {
-      position: 'fixed',
-      top: '80px',
-      right: '24px',
-      zIndex: '100',
-      padding: '8px',
-      background: '#252d3f',
-      border: '1px solid #57a6ff',
-      borderRadius: '6px',
-    });
-    const title = document.createElement('span');
-    title.textContent = '源图编辑 ';
-    sourceBar.append(title);
-    const done = document.createElement('button');
-    done.textContent = '应用到 UI';
-    const abort = document.createElement('button');
-    abort.textContent = '取消';
-    done.onclick = async () => {
-      done.disabled = true;
-      try {
-        await apply();
-        sourceBar?.remove();
-        sourceBar = null;
-      } catch (e) {
-        bb.Blockbench.showQuickMessage(String(e));
-        done.disabled = false;
-      }
-    };
-    abort.onclick = () => {
-      cancel();
-      sourceBar?.remove();
-      sourceBar = null;
-    };
-    sourceBar.append(done, abort);
-    document.body.append(sourceBar);
+    sourceEdit = { projectId: bb.Project.uuid, apply, cancel, busy: false };
+    bb.updateInterface();
+    bb.BARS.updateConditions();
   }
   const get = () => (bb.Project ? apps.get(bb.Project.uuid) : undefined);
+  const properties = new PropertyBridge(bb, () => get()?.app ?? null);
+  life.add(() => properties.dispose());
+  let interactionSelect: HostObject, viewSelect: HostObject;
   async function activate() {
     const generation = ++token,
       project = bb.Project;
     if (current === get()?.app && current) return;
     viewport?.dispose();
     viewport = null;
-    unmount?.();
-    unmount = null;
     current = null;
     if (!project?.unhandled_root_fields?.[METADATA_KEY]) return;
     try {
@@ -100,8 +61,14 @@ export function install(bb: HostRuntime) {
         if (!doc) return;
         const app = new Studio(host, imagePort, doc);
         host.onSourceSession = sourceSession;
+        host.onBeforeViewUpdate = (doc) => properties.hydrate(doc);
         entry = { app, host };
         apps.set(project.uuid, entry);
+        life.add(
+          app.subscribe(() => {
+            if (host.active()) properties.refresh(false);
+          }),
+        );
         await host.prepareSources();
         await Promise.all(
           project.textures.map((t: HostObject) => t.img?.decode?.().catch(() => {})),
@@ -115,18 +82,9 @@ export function install(bb: HostRuntime) {
       const saved = JSON.parse(localStorage.getItem('mcui_preferences') ?? '{}');
       viewport.setInteraction(saved.interaction === 'native' ? 'native' : 'figma');
       viewport.setView(current.state.view);
-      const app = current;
-      unmount = mountWorkbench(panel.node, app, {
-        changeView: (v) => viewport?.setView(v),
-        changeInteraction: (v) => {
-          viewport?.setInteraction(v);
-          localStorage.setItem('mcui_preferences', JSON.stringify({ interaction: v }));
-        },
-        importImage: () => importImages(),
-        pasteNew: () => {
-          void paste(true);
-        },
-      });
+      interactionSelect?.set(current.state.interaction);
+      viewSelect?.set(current.state.view);
+      properties.refresh();
       bb.updateInterface();
     } catch (e) {
       bb.Blockbench.showQuickMessage(`MCUI: ${e instanceof Error ? e.message : String(e)}`, 6000);
@@ -139,8 +97,14 @@ export function install(bb: HostRuntime) {
     const host = new NativeHost(bb, project),
       app = Studio.fresh(host, imagePort);
     host.onSourceSession = sourceSession;
+    host.onBeforeViewUpdate = (doc) => properties.hydrate(doc);
     host.write(app.state.doc);
     apps.set(project.uuid, { app, host });
+    life.add(
+      app.subscribe(() => {
+        if (host.active()) properties.refresh(false);
+      }),
+    );
     const id = imagePort.id();
     app.execute('创建 UI 画板', (doc) => {
       const n = createNode(id, '画板', 'frame', { x: 0, y: 0, width: 320, height: 180 });
@@ -255,7 +219,136 @@ export function install(bb: HostRuntime) {
     };
     input.click();
   }
+  const command = (
+    id: string,
+    name: string,
+    icon: string,
+    click: () => void,
+    condition = () => !!current,
+  ) => new bb.Action(id, { name, icon, condition, click });
+  const selectedLayer = () =>
+    !!current && properties.targets().length === 1 && properties.targets()[0]?.kind === 'layer';
+  const parent = () => {
+    const n = properties.targets()[0];
+    return n?.kind === 'layer' ? n.parent : (n?.id ?? null);
+  };
+  const withLayer = (fn: (app: Studio, id: string) => void) => {
+    const n = properties.targets()[0];
+    if (current && n) fn(current, n.id);
+  };
   const actions = [
+    command('mcui_add_layer', '新增 UI 绘画图层', 'add_photo_alternate', () =>
+      current?.add('layer', parent()),
+    ),
+    command('mcui_add_frame', '新增 UI Frame', 'dashboard_customize', () =>
+      current?.add('frame', parent()),
+    ),
+    command('mcui_add_group', '新增 UI 组', 'create_new_folder', () =>
+      current?.add('group', parent()),
+    ),
+    command(
+      'mcui_edit_source',
+      'UI：绘制／编辑源图',
+      'brush',
+      () => withLayer((app, id) => app.paint(id)),
+      selectedLayer,
+    ),
+    command(
+      'mcui_nine_slice',
+      'UI：设为九宫格',
+      'grid_on',
+      () => withLayer((app, id) => app.makeNine(id)),
+      selectedLayer,
+    ),
+    command(
+      'mcui_content_preview',
+      'UI：内容预览与参数',
+      'crop',
+      () =>
+        withLayer((app, id) => {
+          void showContentPreview(bb, app, id);
+        }),
+      selectedLayer,
+    ),
+    command(
+      'mcui_flatten',
+      'UI：转为绘画图层',
+      'image',
+      () => withLayer((app, id) => app.flatten(id)),
+      selectedLayer,
+    ),
+    command(
+      'mcui_restore_source',
+      'UI：恢复原始来源',
+      'restore',
+      () => withLayer((app, id) => app.restoreSource(id)),
+      () => selectedLayer() && !!properties.targets()[0]?.originalContent,
+    ),
+    command(
+      'mcui_adopt',
+      'UI：采用当前结果',
+      'check',
+      () => withLayer((app, id) => app.adopt(id)),
+      () => !!current && properties.targets().length === 1 && !!properties.targets()[0]?.suspended,
+    ),
+    command(
+      'mcui_regenerate',
+      'UI：按规则重新生成',
+      'refresh',
+      () => withLayer((app, id) => app.regenerate(id)),
+      () => !!current && properties.targets().length === 1 && !!properties.targets()[0]?.suspended,
+    ),
+    command('mcui_paste_new', 'UI：粘贴为新图层', 'content_paste', () => {
+      void paste(true);
+    }),
+    command(
+      'mcui_layer_up',
+      'UI：上移一层',
+      'arrow_upward',
+      () => withLayer((app, id) => app.reorder(id, 1)),
+      () => !!current && properties.targets().length === 1,
+    ),
+    command(
+      'mcui_layer_down',
+      'UI：下移一层',
+      'arrow_downward',
+      () => withLayer((app, id) => app.reorder(id, -1)),
+      () => !!current && properties.targets().length === 1,
+    ),
+    command(
+      'mcui_source_apply',
+      '应用源图到 UI',
+      'check',
+      () => {
+        const session = sourceEdit;
+        if (!session || session.busy) return;
+        session.busy = true;
+        bb.BARS.updateConditions();
+        void session
+          .apply()
+          .then(() => {
+            if (sourceEdit === session) sourceEdit = null;
+          })
+          .catch((e) => bb.Blockbench.showQuickMessage(String(e), 4500))
+          .finally(() => {
+            session.busy = false;
+            bb.updateInterface();
+            bb.BARS.updateConditions();
+          });
+      },
+      () => !!sourceEdit && sourceEdit.projectId === bb.Project?.uuid && !sourceEdit.busy,
+    ),
+    command(
+      'mcui_source_cancel',
+      '取消源图编辑',
+      'close',
+      () => {
+        sourceEdit?.cancel();
+        sourceEdit = null;
+        bb.updateInterface();
+      },
+      () => !!sourceEdit && sourceEdit.projectId === bb.Project?.uuid && !sourceEdit.busy,
+    ),
     new bb.Action('mcui_new_project', {
       name: '新建 MC UI 项目',
       icon: 'dashboard_customize',
@@ -299,11 +392,68 @@ export function install(bb: HostRuntime) {
       action.delete();
     });
   }
+  interactionSelect = new bb.BarSelect('mcui_interaction', {
+    name: 'UI 交互风格',
+    icon: 'mouse',
+    value: 'figma',
+    options: { figma: 'Figma 风格', native: '原生交互' },
+    condition: () => !!current,
+    onChange: (item: HostObject) => {
+      viewport?.setInteraction(item.value);
+      localStorage.setItem('mcui_preferences', JSON.stringify({ interaction: item.value }));
+    },
+  });
+  viewSelect = new bb.BarSelect('mcui_view', {
+    name: 'UI 视图',
+    icon: 'view_in_ar',
+    value: '2d',
+    options: { '2d': '2D 顶视图', '3d': '3D 透视' },
+    condition: () => !!current,
+    onChange: (item: HostObject) => viewport?.setView(item.value),
+  });
+  for (const widget of [interactionSelect, viewSelect]) {
+    bb.Toolbars.main_tools.add(widget);
+    life.add(() => {
+      bb.Toolbars.main_tools.remove(widget);
+      widget.delete();
+    });
+  }
+  const byId = (id: string) => actions.find((a) => a.id === id)!;
+  for (const id of ['mcui_add_layer', 'mcui_add_frame', 'mcui_import_image']) {
+    const action = byId(id);
+    bb.Toolbars.outliner.add(action);
+    bb.BarItems.add_element.side_menu.addAction(action);
+    life.add(() => {
+      bb.Toolbars.outliner.remove(action);
+      bb.BarItems.add_element.side_menu.removeAction(action);
+    });
+  }
+  for (const id of ['mcui_source_apply', 'mcui_source_cancel']) {
+    const action = byId(id);
+    bb.Toolbars.brush.add(action);
+    life.add(() => bb.Toolbars.brush.remove(action));
+  }
+  for (const ctor of [bb.Cube, bb.Group])
+    for (const id of [
+      'mcui_edit_source',
+      'mcui_nine_slice',
+      'mcui_content_preview',
+      'mcui_flatten',
+      'mcui_restore_source',
+      'mcui_adopt',
+      'mcui_regenerate',
+      'mcui_layer_up',
+      'mcui_layer_down',
+    ]) {
+      const action = byId(id);
+      ctor.prototype.menu.addAction(action);
+      life.add(() => ctor.prototype.menu.removeAction(action));
+    }
   const commandActive = () =>
     !!current &&
     !focused() &&
     bb.Modes.edit &&
-    ['preview', 'mcui_studio', 'outliner'].includes(bb.Prop.active_panel);
+    ['preview', 'outliner', 'element', 'transform'].includes(bb.Prop.active_panel);
   life.add(
     bb.SharedActions.add('copy', {
       subject: 'mcui',
@@ -396,8 +546,6 @@ export function install(bb: HostRuntime) {
       if (current === entry?.app) {
         viewport?.dispose();
         viewport = null;
-        unmount?.();
-        unmount = null;
         current = null;
       }
     }),
@@ -414,7 +562,18 @@ export function install(bb: HostRuntime) {
           .filter(([, b]) => selected.has(b.elementId))
           .map(([id]) => id),
       );
+      properties.refresh();
     }),
+  );
+  life.add(
+    bb.Blockbench.on('loaded_plugin', () => {
+      const timer = setTimeout(() => properties.refresh(), 70);
+      life.add(() => clearTimeout(timer));
+    }),
+  );
+  life.add(bb.Blockbench.on('select_mode', () => properties.refresh()));
+  life.add(
+    bb.Codecs.project.on('compile', ({ model }: HostObject) => properties.stripSerialized(model)),
   );
   life.add(
     bb.Blockbench.on('create_undo_save', ({ save }: HostObject) => {
@@ -456,9 +615,18 @@ export function install(bb: HostRuntime) {
       }
     }),
   );
+  life.add(
+    bb.Blockbench.on('finished_edit', () => {
+      const entry = get();
+      if (entry && !entry.app.applying) {
+        entry.app.reflectSelection(entry.host.scene(entry.app.state.doc).selection);
+        properties.refresh();
+      }
+    }),
+  );
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.1.1',
+    version: '0.2.0',
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,
@@ -469,8 +637,7 @@ export function install(bb: HostRuntime) {
   return () => {
     ++token;
     viewport?.dispose();
-    unmount?.();
-    sourceBar?.remove();
+    sourceEdit = null;
     for (const { app } of apps.values()) app.dispose();
     apps.clear();
     life.dispose();

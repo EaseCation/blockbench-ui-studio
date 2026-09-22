@@ -11,6 +11,16 @@ export interface NativeSnapshot {
   textureId?: string;
   unsupported?: string;
   parentId?: string;
+  elementId?: string;
+  kind?: 'layer' | 'group';
+  sourceId?: string;
+  children?: Id[];
+  siblingIndex?: number;
+}
+export interface NativeSceneSnapshot {
+  nodes: Record<Id, NativeSnapshot>;
+  roots: Id[];
+  selection: Id[];
 }
 export interface ImagePort {
   decode(png: string): Promise<Pixels>;
@@ -22,6 +32,7 @@ export interface ProjectPort {
   write(doc: UiDocument): void;
   snapshots(doc: UiDocument): Record<Id, NativeSnapshot>;
   unmanaged(doc: UiDocument): NativeSnapshot[];
+  scene(doc: UiDocument): NativeSceneSnapshot;
 }
 export interface ScenePort {
   apply(

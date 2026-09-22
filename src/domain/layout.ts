@@ -45,6 +45,13 @@ export function layout(doc: UiDocument): ResolvedScene {
       } else {
         const f = n.frame ?? defaultFrame(),
           children = flow(n);
+        if (
+          f.direction === 'free' &&
+          children.some((c) =>
+            axis === 'width' ? c.layout.offsetPercent?.x : c.layout.offsetPercent?.y,
+          )
+        )
+          throw new Error(`${n.name}: Hug 与子项百分比坐标形成循环依赖`);
         const linear =
           (axis === 'width' && f.direction === 'row') ||
           (axis === 'height' && f.direction === 'column');
@@ -159,12 +166,12 @@ export function layout(doc: UiDocument): ResolvedScene {
       } else if (f.direction === 'free' || c.layout.positioning === 'absolute' || !c.visible) {
         cx =
           rect.x +
-          rect.width * c.layout.anchorFrom[0] -
+          rect.width * (c.layout.anchorFrom[0] + (c.layout.offsetPercent?.x ?? 0)) -
           width * c.layout.anchorTo[0] +
           c.layout.offset.x;
         cy =
           rect.y +
-          rect.height * c.layout.anchorFrom[1] -
+          rect.height * (c.layout.anchorFrom[1] + (c.layout.offsetPercent?.y ?? 0)) -
           height * c.layout.anchorTo[1] +
           c.layout.offset.y;
       } else {
@@ -191,6 +198,8 @@ export function layout(doc: UiDocument): ResolvedScene {
   }
   for (const id of doc.roots) {
     const n = node(id);
+    if (n.layout.offsetPercent?.x || n.layout.offsetPercent?.y)
+      throw new Error(`${n.name}: 根节点没有百分比坐标的参照父级`);
     place(
       n,
       {

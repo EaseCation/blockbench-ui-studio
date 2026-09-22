@@ -1,4 +1,19 @@
 import type { SizeRule } from './types';
+export function parseOffset(value: string): { percent: number; pixels: number } {
+  const text = value.trim().toLowerCase();
+  if (/^[+-]?\d+(?:\.\d+)?(?:px)?$/.test(text))
+    return { percent: 0, pixels: Number.parseFloat(text) };
+  const match = /^([+-]?\d+(?:\.\d+)?)%\s*(?:([+-])\s*(\d+(?:\.\d+)?)px)?$/.exec(text);
+  if (!match) throw new Error('坐标应为像素或父级百分比±像素，例如 50% - 8px；不支持 fill/hug');
+  return {
+    percent: Number(match[1]) / 100,
+    pixels: match[3] ? Number(match[3]) * (match[2] === '-' ? -1 : 1) : 0,
+  };
+}
+export function formatOffset(percent: number, pixels: number): string {
+  if (!percent) return `${pixels}px`;
+  return `${Math.round(percent * 10000) / 100}%${pixels ? ` ${pixels < 0 ? '-' : '+'} ${Math.abs(pixels)}px` : ''}`;
+}
 export function parseSize(text: string): SizeRule {
   const s = text.trim().toLowerCase();
   if (s === 'fill' || s === 'hug') return { kind: s };

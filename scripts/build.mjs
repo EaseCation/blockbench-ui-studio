@@ -6,8 +6,6 @@ const options = {
   target: 'es2020',
   outfile: 'dist/mcui_studio.js',
   sourcemap: true,
-  jsx: 'automatic',
-  jsxImportSource: 'preact',
   loader: { '.css': 'text' },
   logLevel: 'info',
 };

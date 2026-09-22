@@ -21,6 +21,7 @@ export interface LayoutSpec {
   anchorFrom: Anchor;
   anchorTo: Anchor;
   offset: Point;
+  offsetPercent?: Point;
   minWidth: number;
   minHeight: number;
   maxWidth?: number;
@@ -83,6 +84,7 @@ export interface NativeBinding {
   elementId: string;
   textureId?: string;
   fingerprint?: string;
+  groupOrigin?: [number, number, number];
 }
 export interface UiDocument {
   schemaVersion: 1;

@@ -1,65 +1,58 @@
-# 架构与 Blockbench 升级适配
+# 架构与 Blockbench 升级适配（v0.2）
 
 ## 依赖方向
 
 ```text
-Plugin Entry ──> Blockbench Adapter ──> Application ──> Domain
-                       │                    ↑
-                       ├─> Presentation ────┘
-                       └─> Browser Platform（图片编解码）
+原生大纲／元素／工具栏／附加标签
+             ↓ 宿主适配器
+Application（命令、事务、差异协调） → Domain（布局、表达式、像素）
+             ↓ 纯数据端口
+原生 Cube／Group／Texture／Undo
 ```
 
-业务代码不得引用 Cube、Texture、Project、Undo、THREE、Vue 或 DOM。Domain 计算布局和像素；Application 管理事务、编辑意图和宿主变更协调。Presentation 使用自带 Preact，通过 Studio 命令操作数据。
+Domain/Application 不引用 Blockbench、Three.js、Electron 或 DOM。常规界面使用原生注册机制；不再维护独立图层树或自制工作台，已移除 Preact。Presentation 只保留必要的 SVG 视口辅助。
 
-Blockbench 接触面限定为：
+## 宿主接触面
 
-| 文件             | 上游接触点                                                          |
-| ---------------- | ------------------------------------------------------------------- |
-| `runtime.ts`     | 宿主门面、能力探测和资源释放                                        |
-| `native-host.ts` | Cube／Group／Texture、原生存储与 Undo、源图绘画                     |
-| `viewport.ts`    | 原生 Preview、相机、视口 DOM、Tool 与事件捕获                       |
-| `install.ts`     | 注册创建入口（ModelLoader）／命令／面板／生命周期、剪贴板动作和装配 |
+- `runtime.ts`：宿主门面、能力检测、资源释放。
+- `native-host.ts`：原生对象和层级快照、内嵌保存、Undo、绘画会话。
+- `properties.ts`：Property 注册、原生元素表单、InputForm 附加标签、草稿输入及自动打开元素标签。
+- `native-fields.ts`：仅宿主使用的临时字段与复制来源标记。
+- `viewport.ts`：注册 Tool、原生命中／框选、相机、必要的二维手势。
+- `preview-dialog.ts`：原生 Dialog 中的内容预览。
+- `install.ts`：ModelLoader、原生命令／工具栏／菜单、生命周期装配。
 
-宿主对象只能存在于上述适配器中。`HostPort` 等自有接口只接受纯数据和 ID。官方类型包携带 Electron、Vue 等额外依赖且发布版本落后于目标源码，因此本工程采用局部宿主门面，不把官方全局声明或宿主运行库引入业务编译环境；真实宿主契约测试补充动态接口验证。
+字段声明只存在于适配层。原生“元素”保留位置 X/Y、尺寸 W/H 两行；布局约束和内容参数分别在原生附加标签中。位置和尺寸的双轴控件复用原生文本输入和 FormElement 注册，只补充草稿提交、表达式校验与轴标记，不引入第二套 UI 框架。
 
-## 上游基线
+## 结构与状态
 
-Blockbench 5.2.1，`e2ede0809ee6bc91f374ac7e00d34cffbdf86a14`。
+原生大纲负责结构操作。NativeSceneSnapshot 包含根节点顺序、完整父子关系、同级索引、稳定 UUID、名称、可见性、锁定及显式选择。应用层根据快照更新规范化业务树；不能仅凭 Y 高度判断排序。
 
-重点参考：
+活动会话中的排序、换父级、原生新增与 Option 复制是正常操作。原生复制通过临时来源标记关联业务配置，再分配新的对象和成品贴图。冷启动发现未安装插件期间的差异仍保留当前原生结果并暂停冲突规则。
 
-- `js/formats/bbmodel.js`：原生 Project codec 的 compile/parse。
-- `js/io/project.ts`：`unhandled_root_fields` 为原生 object Property。
-- `js/undo.js`：`create_undo_save`、`load_undo_save`、`init_edit`、`finish_edit`。
-- `js/texturing/textures.js`：纹理内嵌、原生绘画层与更新接口。
-- `js/preview/preview.ts`、`OrbitControls.js`：相机和混合 Pointer/Mouse 事件。
-- `js/io/model_loader.ts`：原生“新建”列表入口，创建结果仍使用 `Formats.free`；开始页双重调用在插件内合并，不修改宿主方法。
+原生 Group 与 Cube 上的注册属性是展示／输入代理，不是权威配置。保存时清理代理字段和复制来源标记；权威数据继续在 `unhandled_root_fields.mcui_studio` 中。旧 v0.1 项目保持可读，显示结果仍由标准对象与内嵌贴图承担。
 
-### 数据载体
+## 两种事务所有者
 
-`unhandled_root_fields.mcui_studio` 存放版本化 carrier，包含 portable document 与 adapter-owned native source snapshots。Domain 不读取原生绘画层结构。
+- 应用事务：插件命令、内容导入、八点缩放等，由应用开启／提交 Undo。
+- 宿主事务：原生元素表单、大纲和变换工具，使用 `executeWithinHostEdit` 加入现有 Undo。
 
-原生 Cube 和纹理是实际显示结果；规则是继续编辑的源数据。打开文件时不会立刻用规则重建整个场景。先检查上次结果指纹，发生外部编辑时采用或暂停，避免覆盖。
+先准备并验证候选文档，再写入原生结果。派生布局、像素、UI 元数据与对象变更必须进入同一编辑记录。不能在属性回调中嵌套开启 Undo。
 
-所用原生字段为兼容策略而非 Blockbench 官方的任意插件存储协议。未来更改数据载体只应影响适配器及格式迁移，不影响业务节点和布局规则。转换模型格式会清空该字段，应保留 `.bbmodel` 编辑源。
+扩展宿主快照时不追加 `selection: true`：原生选择快照必须在 initEdit 开始时建立，否则会使用过期选区。独立选择操作使用原生选择历史；Group 的显式选择取 selected_groups，不能把聚合的 selected 状态当成用户选中 Frame。
 
-### 事务
+表达式只在 Enter 或失焦后验证、提交；不完整输入不进入模型。多选双轴输入只更新实际编辑的轴。坐标采用像素分量及可选百分比分量，百分比参照父级，旧文件缺少分量时视为零。
 
-输入意图 → 克隆文档 → 约束与布局验证 → 生成脏节点贴图 → 开始 Undo → 应用原生变更 → 保存规则 → 完成 Undo。
+## 原生输入复用
 
-连续拖动共用一次事务。原生编辑通过 init/finish 钩子扩展快照；元数据通过 Undo save 的独立命名空间保存。选择、平移、缩放相机不触发烘焙。
+普通点击使用 Preview 的命中和原生选择方法；空白框选使用 Preview.startSelRect 与原生选区历史。插件只处理 Shift 映射、元素本体直拖、八点控制、测距和连续捏合缩放。原生移动／缩放继续使用宿主 TransformerModule，并在结束事务时同步派生结果。
 
-### 资源与失效
+源图编辑仍使用原生图片项目。应用／取消注册为原生绘画工具栏及菜单命令。没有运行时九宫格 shader 或自定义最终渲染器。
 
-原图按源版本缓存；成品按源版本、内容参数、尺寸与透明度缓存。移动和 Y 排序不使贴图失效。图片解码完成之前不修改项目。所有处理均有画布像素上限。
+## 生命周期与升级
 
-面板、监听器、Tool、Overlay 和命令都注册清理函数；切换项目会释放当前视口接管，卸载会恢复原生相机与工具。
+基线为 Blockbench 5.2.1 / e2ede0809ee6bc91f374ac7e00d34cffbdf86a14。主要依据：element_panel.ts、form.ts、property.ts、outliner.js、undo.js、model_loader.ts、preview.ts 和 OrbitControls.js。
 
-## 升级步骤
+所有注册项有卸载路径。属性注销后清理对应生成表单字段；原生其他属性处理器保持工作。附加标签与命令仅在相关上下文显示，用户的全局快捷键不被永久修改。
 
-1. 在独立测试宿主检出新 Blockbench 版本，不改业务代码。
-2. 运行依赖边界、类型、业务测试和真实宿主测试。
-3. 对照适配器能力检测与四个适配文件定位差异。
-4. 必要时新增版本适配分支或数据迁移；不要把宿主对象传进 Domain 作为快捷修复。
-5. 检查有／无插件文件往返、Undo、绘画层、相机输入和完整卸载。
-6. 更新最低版本、契约基线和人工硬件验证记录。
+升级时先更换隔离测试宿主，再运行依赖边界、类型、内核和真实宿主测试。接口差异只能进入适配器；不要把宿主类型传入业务层，也不要覆盖宿主原型。

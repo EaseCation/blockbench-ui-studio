@@ -7,7 +7,7 @@ bb.Blockbench.Plugin.register('mcui_studio', {
   author: 'MC UI Studio contributors',
   icon: 'dashboard_customize',
   description: 'Minecraft 像素 UI：图层、九宫格、图片适配、二维交互与响应式布局。',
-  version: '0.1.1',
+  version: '0.2.0',
   variant: 'both',
   min_version: '5.2.1',
   tags: ['Minecraft: Bedrock Edition', 'Painting'],

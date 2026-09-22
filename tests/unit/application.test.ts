@@ -20,6 +20,9 @@ class MemoryHost implements HostPort {
   snapshots() {
     return {} as Record<string, NativeSnapshot>;
   }
+  scene(doc: UiDocument) {
+    return { nodes: this.snapshots(), roots: doc.roots, selection: [] };
+  }
   unmanaged() {
     return [];
   }
@@ -112,5 +115,49 @@ describe('应用事务', () => {
     const copy = app.state.doc.nodes[app.state.selection[0]!]!;
     expect(copy.id).not.toBe(id);
     expect(copy.content?.source).toBe(app.state.doc.nodes[id]!.content?.source);
+  });
+});
+
+describe('宿主事务桥', () => {
+  it('加入当前事务不会嵌套开启或提交 Undo', () => {
+    const { app, host } = fixture(),
+      id = app.add('layer');
+    const begins = host.begins,
+      commits = host.commits;
+    expect(
+      app.executeWithinHostEdit('native', (doc) => {
+        doc.nodes[id]!.layout.width = { kind: 'fixed', value: 64 };
+      }),
+    ).toBe(true);
+    expect(app.state.doc.nodes[id]!.rect.width).toBe(64);
+    expect(host.begins).toBe(begins);
+    expect(host.commits).toBe(commits);
+  });
+  it('非法宿主属性取消当前编辑并保留旧数据', () => {
+    const { app, host } = fixture(),
+      id = app.add('layer');
+    expect(
+      app.executeWithinHostEdit('invalid', (doc) => {
+        doc.nodes[id]!.layout.width = { kind: 'expression', percent: 1, pixels: 0 };
+      }),
+    ).toBe(false);
+    expect(app.state.doc.nodes[id]!.rect.width).toBe(32);
+    expect(host.cancels).toBe(1);
+  });
+});
+
+describe('百分比位置拖动', () => {
+  it('拖动保留百分比，只修改像素分量', () => {
+    const { app } = fixture(),
+      p = app.add('frame'),
+      id = app.add('layer', p);
+    app.update(id, (n) => {
+      n.layout.offsetPercent = { x: 0.5, y: 0 };
+      n.layout.offset.x = -8;
+    });
+    const rect = app.state.doc.nodes[id]!.rect;
+    app.execute('move', (d) => app.changeRects(d, { [id]: { ...rect, x: rect.x + 10 } }));
+    expect(app.state.doc.nodes[id]!.layout.offsetPercent!.x).toBe(0.5);
+    expect(app.state.doc.nodes[id]!.layout.offset.x).toBe(2);
   });
 });

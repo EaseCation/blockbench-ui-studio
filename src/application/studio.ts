@@ -187,6 +187,31 @@ export class Studio {
       return false;
     }
   }
+  validateChange(change: (doc: UiDocument) => void) {
+    const candidate = clone(this.state.doc);
+    change(candidate);
+    this.calculate(candidate);
+  }
+  executeWithinHostEdit(label: string, change: (doc: UiDocument) => void): boolean {
+    const previous = this.state.doc;
+    try {
+      const candidate = clone(previous);
+      change(candidate);
+      this.publish(candidate, this.calculate(candidate), previous);
+      return true;
+    } catch (error) {
+      this.applying = true;
+      try {
+        this.host.cancel();
+      } finally {
+        this.applying = false;
+      }
+      this.state = { ...this.state, doc: previous, scene: layout(previous) };
+      this.renderKeys.clear();
+      this.report(error);
+      return false;
+    }
+  }
   beginGesture(label: string) {
     if (this.state.busy || this.gesture) return;
     this.gesture = clone(this.state.doc);
@@ -249,7 +274,7 @@ export class Studio {
   }
   reflectSelection(ids: Id[]) {
     if (JSON.stringify(ids) !== JSON.stringify(this.state.selection)) {
-      this.state = { ...this.state, selection: ids };
+      this.state = { ...this.state, selection: topSelection(this.state.doc, ids) };
       this.emit();
     }
   }
@@ -380,8 +405,16 @@ export class Studio {
         n.layout.height = resizeRule(n.layout.height, r.height - old.height, r.height);
       const p = n.parent ? doc.nodes[n.parent]!.rect : { x: 0, y: 0, width: 0, height: 0 };
       n.layout.offset = {
-        x: r.x - p.x - p.width * n.layout.anchorFrom[0] + r.width * n.layout.anchorTo[0],
-        y: r.y - p.y - p.height * n.layout.anchorFrom[1] + r.height * n.layout.anchorTo[1],
+        x:
+          r.x -
+          p.x -
+          p.width * (n.layout.anchorFrom[0] + (n.layout.offsetPercent?.x ?? 0)) +
+          r.width * n.layout.anchorTo[0],
+        y:
+          r.y -
+          p.y -
+          p.height * (n.layout.anchorFrom[1] + (n.layout.offsetPercent?.y ?? 0)) +
+          r.height * n.layout.anchorTo[1],
       };
       n.rect = { ...r };
     }
@@ -577,110 +610,160 @@ export class Studio {
       if (!applied) throw new Error(this.state.error ?? '源图尚未应用');
     });
   }
-  /** Absorb native edits before its post-edit snapshot; on reopen preserve divergent native results. */
+  /** Native hierarchy is authoritative during live edits; cold-load differences remain protected. */
   reconcile(onOpen = false) {
     if (this.applying || this.gesture) return;
     const previous = this.state.doc,
       doc = clone(previous),
-      snapshots = this.host.snapshots(doc);
+      native = this.host.scene(doc);
+    const snapshots = native.nodes;
     let changed = false;
-    for (const snap of this.host.unmanaged(doc)) {
-      const n = createNode(snap.id, snap.name, 'layer', snap.rect);
+    const newlyAdded = new Set<Id>();
+    for (const snap of Object.values(snapshots)) {
+      if (doc.nodes[snap.id]) continue;
+      const original = snap.sourceId ? previous.nodes[snap.sourceId] : undefined;
+      const n = original
+        ? clone(original)
+        : createNode(snap.id, snap.name, snap.kind === 'group' ? 'group' : 'layer', snap.rect);
+      n.id = snap.id;
+      n.name = snap.name;
+      n.children = [];
+      n.parent = snap.parentId ?? null;
+      n.rect = { ...snap.rect };
       n.visible = snap.visible;
       n.locked = snap.locked;
-      const parent =
-        Object.entries(doc.bindings).find(([, b]) => b.elementId === snap.parentId)?.[0] ?? null;
-      n.parent = parent;
-      n.suspended = '原生新增图层：保留全部原生内容，可采用为 UI 绘画图层';
-      const p = parent ? doc.nodes[parent]!.rect : { x: 0, y: 0 };
-      n.layout.offset = { x: n.rect.x - p.x, y: n.rect.y - p.y };
-      const pixels = snap.textureId ? this.host.pixels(snap.textureId) : null;
-      if (pixels)
-        n.content = {
-          kind: 'paint',
-          source: this.putSource(doc, pixels),
-          mode: 'extend',
-          origin: { x: 0, y: 0 },
-        };
+      delete n.suspended;
+      if (!original && n.kind === 'layer') {
+        const pixels = snap.textureId ? this.host.pixels(snap.textureId) : null;
+        const source = this.putSource(
+          doc,
+          pixels ??
+            blank(
+              Math.max(1, Math.round(snap.rect.width)),
+              Math.max(1, Math.round(snap.rect.height)),
+            ),
+        );
+        if (pixels && snap.textureId) this.host.retainPaintLayers(source, snap.textureId);
+        n.content = { kind: 'paint', source, mode: 'extend', origin: { x: 0, y: 0 } };
+      }
+      if (onOpen || snap.unsupported)
+        n.suspended = snap.unsupported ?? '发现原生新增对象，已保留原生内容';
       doc.nodes[n.id] = n;
-      (parent ? doc.nodes[parent]!.children : doc.roots).push(n.id);
-      doc.bindings[n.id] = { elementId: snap.id, textureId: snap.textureId };
-      snapshots[n.id] = snap;
+      doc.bindings[n.id] = {
+        elementId: snap.elementId ?? n.id,
+        textureId: original && !onOpen ? undefined : snap.textureId,
+      };
+      newlyAdded.add(n.id);
       changed = true;
     }
-    for (const id of Object.keys(doc.bindings)) {
-      const n = doc.nodes[id],
-        snap = snapshots[id],
-        before = this.native.get(id);
-      if (!n) continue;
-      if (!snap) {
-        removeNode(doc, id);
+    for (const id of Object.keys(doc.nodes))
+      if (!snapshots[id]) {
+        delete doc.nodes[id];
+        delete doc.bindings[id];
         changed = true;
-        continue;
       }
-      const expected = onOpen ? doc.bindings[id]?.fingerprint : before?.fingerprint;
-      if (!expected || expected === snap.fingerprint) continue;
+    if (JSON.stringify(doc.roots) !== JSON.stringify(native.roots)) changed = true;
+    doc.roots = [...native.roots];
+    for (const snap of Object.values(snapshots)) {
+      const n = doc.nodes[snap.id]!;
+      const old = previous.nodes[snap.id];
+      const oldSiblings = old
+        ? old.parent
+          ? previous.nodes[old.parent]?.children
+          : previous.roots
+        : [];
+      const hierarchyChanged =
+        !old ||
+        old.parent !== (snap.parentId ?? null) ||
+        oldSiblings?.indexOf(snap.id) !== snap.siblingIndex ||
+        JSON.stringify(old.children) !== JSON.stringify(snap.children ?? []);
+      n.parent = snap.parentId ?? null;
+      n.children = [...(snap.children ?? [])];
+      const before = this.native.get(n.id),
+        expected = onOpen ? previous.bindings[n.id]?.fingerprint : before?.fingerprint;
+      if (!hierarchyChanged && expected === snap.fingerprint) continue;
       changed = true;
       n.name = snap.name;
       n.visible = snap.visible;
       n.locked = snap.locked;
       if (snap.unsupported) {
+        n.rect = { ...snap.rect };
         n.suspended = snap.unsupported;
-        n.rect = snap.rect;
         continue;
       }
-      const painted = before && before.pixelFingerprint !== snap.pixelFingerprint;
       if (onOpen) {
-        n.rect = snap.rect;
+        n.rect = { ...snap.rect };
         n.suspended = '检测到未安装插件时的修改，保留当前结果；可采用结果或重新生成';
         continue;
       }
-      if (painted && n.content && snap.textureId) {
-        const pixels = this.host.pixels(snap.textureId);
-        if (pixels) {
-          if (n.content.kind === 'paint') {
-            const merged =
-              n.content.mode === 'extend'
-                ? mergePaint(this.source(doc, n.content.source), pixels, n.content.origin)
-                : { pixels, origin: { x: 0, y: 0 } };
-            const source = this.putSource(doc, merged.pixels);
-            this.host.retainPaintLayers(source, snap.textureId, merged.origin);
-            n.content = { ...n.content, source, origin: merged.origin };
-          } else n.suspended = '成品贴图已被手工修改，自动生成已暂停';
-        }
-      }
-      const parent = n.parent ? doc.nodes[n.parent] : undefined;
-      const moved = n.rect.x !== snap.rect.x || n.rect.y !== snap.rect.y;
       if (
-        moved &&
-        n.layout.positioning === 'flow' &&
-        parent?.frame &&
-        parent.frame.direction !== 'free'
+        !n.suspended &&
+        n.content &&
+        snap.textureId &&
+        before &&
+        before.pixelFingerprint !== snap.pixelFingerprint
       ) {
-        n.rect = snap.rect;
-        n.suspended = '自动布局中的元素被原生工具移动，已保留位置并暂停规则';
-      } else if (!n.suspended && JSON.stringify(n.rect) !== JSON.stringify(snap.rect)) {
-        this.changeRects(doc, { [id]: snap.rect });
+        const pixels = this.host.pixels(snap.textureId);
+        if (pixels && n.content.kind === 'paint') {
+          const merged =
+            n.content.mode === 'extend'
+              ? mergePaint(this.source(doc, n.content.source), pixels, n.content.origin)
+              : { pixels, origin: { x: 0, y: 0 } };
+          const source = this.putSource(doc, merged.pixels);
+          this.host.retainPaintLayers(source, snap.textureId, merged.origin);
+          n.content = { ...n.content, source, origin: merged.origin };
+        } else if (pixels) n.suspended = '成品贴图已被手工修改，自动生成已暂停';
       }
-      if (before && snap.depth !== before.depth) {
-        const list = siblings(doc, n);
-        list.sort(
-          (a, b) =>
-            (snapshots[a]?.depth ?? doc.nodes[a]!.rect.y) -
-            (snapshots[b]?.depth ?? doc.nodes[b]!.rect.y),
-        );
+      if (!n.suspended) {
+        const parent = n.parent ? doc.nodes[n.parent] : undefined;
+        // Reparenting retains world position for free layout; Flow parents decide the final placement.
+        // New and duplicate nodes keep their inherited size rules.
+        if (newlyAdded.has(n.id) || old?.parent !== n.parent) {
+          const p = parent?.rect ?? { x: 0, y: 0, width: 0, height: 0 };
+          n.layout.offset = {
+            x:
+              snap.rect.x -
+              p.x -
+              p.width * (n.layout.anchorFrom[0] + (n.layout.offsetPercent?.x ?? 0)) +
+              snap.rect.width * n.layout.anchorTo[0],
+            y:
+              snap.rect.y -
+              p.y -
+              p.height * (n.layout.anchorFrom[1] + (n.layout.offsetPercent?.y ?? 0)) +
+              snap.rect.height * n.layout.anchorTo[1],
+          };
+          n.rect = { ...snap.rect };
+        } else if (JSON.stringify(n.rect) !== JSON.stringify(snap.rect)) {
+          if (
+            parent?.frame?.direction !== 'free' &&
+            parent?.frame &&
+            n.layout.positioning === 'flow' &&
+            (snap.rect.x !== n.rect.x || snap.rect.y !== n.rect.y)
+          ) {
+            const list = parent.children,
+              axis = parent.frame.direction === 'row' ? 'x' : 'y';
+            list.sort((a, b) => (snapshots[a]?.rect[axis] ?? 0) - (snapshots[b]?.rect[axis] ?? 0));
+          }
+          this.changeRects(doc, { [n.id]: snap.rect });
+        }
+        if (!hierarchyChanged && before && snap.depth !== before.depth && n.kind === 'layer') {
+          siblings(doc, n).sort((a, b) => (snapshots[a]?.depth ?? 0) - (snapshots[b]?.depth ?? 0));
+        }
       }
     }
     if (!changed) return;
-    try {
-      if (onOpen) {
+    if (onOpen) {
+      try {
         this.state = { ...this.state, doc, scene: layout(doc) };
         this.host.write(doc);
         this.emit();
-      } else this.publish(doc, this.calculate(doc), previous);
-    } catch (e) {
-      this.report(e);
-    }
+      } catch (error) {
+        this.report(error);
+      }
+    } else
+      this.executeWithinHostEdit('同步原生操作', (candidate) => {
+        Object.assign(candidate, doc);
+      });
   }
   getSelectionBounds() {
     return bounds(

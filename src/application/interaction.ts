@@ -1,5 +1,5 @@
 import type { Id, Handle, Point, Rect } from '../domain/types';
-import { fromPoints, intersects, resizeRect } from '../domain/geometry';
+import { resizeRect } from '../domain/geometry';
 import type { Studio } from './studio';
 export interface InputPoint {
   screen: Point;
@@ -15,12 +15,10 @@ export interface NavigationPort {
   pan(dx: number, dy: number): void;
 }
 export class InteractionMachine {
-  phase: 'idle' | 'pending' | 'move' | 'resize' | 'marquee' | 'pan' = 'idle';
-  marquee: Rect | null = null;
+  phase: 'idle' | 'pending' | 'move' | 'resize' | 'pan' = 'idle';
   private start: InputPoint | null = null;
   private last: Point = { x: 0, y: 0 };
   private original: Rect | null = null;
-  private oldSelection: Id[] = [];
   constructor(
     readonly studio: Studio,
     readonly navigation: NavigationPort,
@@ -28,7 +26,6 @@ export class InteractionMachine {
   down(p: InputPoint) {
     this.start = p;
     this.last = p.screen;
-    this.oldSelection = [...this.studio.state.selection];
     this.original = this.studio.getSelectionBounds();
     if (p.button === 1 || p.space) {
       this.phase = 'pan';
@@ -51,8 +48,7 @@ export class InteractionMachine {
       this.original = this.studio.getSelectionBounds();
       this.phase = 'pending';
     } else {
-      if (!p.shift) this.studio.select([]);
-      this.phase = 'pending';
+      this.phase = 'idle';
     }
   }
   move(p: InputPoint) {
@@ -65,9 +61,8 @@ export class InteractionMachine {
     if (this.phase === 'pending') {
       if (Math.hypot(p.screen.x - this.start.screen.x, p.screen.y - this.start.screen.y) < 3)
         return;
-      this.phase = this.start.handle ? 'resize' : this.start.hit ? 'move' : 'marquee';
-      if (this.phase !== 'marquee')
-        this.studio.beginGesture(this.phase === 'resize' ? '调整 UI 尺寸' : '移动 UI 图层');
+      this.phase = this.start.handle ? 'resize' : 'move';
+      this.studio.beginGesture(this.phase === 'resize' ? '调整 UI 尺寸' : '移动 UI 图层');
     }
     const delta = { x: p.world.x - this.start.world.x, y: p.world.y - this.start.world.y };
     if (this.phase === 'move') this.studio.moveSelection(delta.x, delta.y);
@@ -93,33 +88,20 @@ export class InteractionMachine {
         minHeight,
       );
       this.studio.transformSelection(this.original, target);
-    } else if (this.phase === 'marquee') {
-      this.marquee = fromPoints(this.start.world, p.world);
-      const ids = this.studio.state.scene.order.filter((id) => {
-        const n = this.studio.state.scene.nodes[id]!;
-        return (
-          this.studio.state.doc.nodes[id]!.kind === 'layer' &&
-          n.visible &&
-          !n.locked &&
-          intersects(n.rect, this.marquee!)
-        );
-      });
-      this.studio.select(p.shift ? [...new Set([...this.oldSelection, ...ids])] : ids);
     }
   }
+
   up() {
     if (this.phase === 'move' || this.phase === 'resize') this.studio.endGesture(true);
     this.reset();
   }
   cancel() {
     if (this.phase === 'move' || this.phase === 'resize') this.studio.endGesture(false);
-    if (this.phase === 'marquee') this.studio.select(this.oldSelection);
     this.reset();
   }
   private reset() {
     this.phase = 'idle';
     this.start = null;
     this.original = null;
-    this.marquee = null;
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "blockbench-mcui",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "A portable pixel UI authoring workbench for Blockbench",
@@ -15,9 +15,6 @@
     "format": "prettier --write src tests scripts docs '*.json' '*.ts' README.md",
     "format:check": "prettier --check src tests scripts docs '*.json' '*.ts' README.md",
     "check": "npm run check:boundaries && npm run typecheck && npm test && npm run build"
-  },
-  "dependencies": {
-    "preact": "10.29.8"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

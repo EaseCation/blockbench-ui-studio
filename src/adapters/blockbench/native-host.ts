@@ -1,10 +1,11 @@
-import type { HostPort, NativeSnapshot } from '../../application/ports';
-import { clone, validateDocument } from '../../domain/document';
+import type { HostPort, NativeSnapshot, NativeSceneSnapshot } from '../../application/ports';
+import { clone, validateDocument, topSelection } from '../../domain/document';
 import type { Id, Pixels, ResolvedScene, UiDocument } from '../../domain/types';
 import type { HostObject, HostRuntime } from './runtime';
 import { hashString } from './runtime';
 import { imagePort } from '../../platform/browser/images';
 import { renderPixels } from '../../domain/raster';
+import { SOURCE_MARKER } from './native-fields';
 export const METADATA_KEY = 'mcui_studio';
 interface Carrier {
   schemaVersion: 1;
@@ -15,6 +16,7 @@ export class NativeHost implements HostPort {
   private sources: Record<string, unknown> = {};
   private sourceLayers = new Map<string, { state: HostObject; pixels: Pixels | null }[]>();
   private pendingSource: { id: Id; snapshot: unknown } | null = null;
+  onBeforeViewUpdate: ((doc: UiDocument) => void) | null = null;
   onSourceSession: ((close: () => Promise<void>, cancel: () => void) => void) | null = null;
   constructor(
     readonly bb: HostRuntime,
@@ -105,7 +107,10 @@ export class NativeHost implements HostPort {
     save.textures ??= {};
     for (const texture of this.project.textures)
       if (!save.textures[texture.uuid]) save.textures[texture.uuid] = texture.getUndoCopy(true);
-    Object.assign(event.aspects, this.all());
+    // Selection must be requested before Undo.initEdit creates its selection snapshot.
+    // Adding it here would reuse an unrelated previous selection snapshot in the host.
+    const { selection: _selection, ...aspects } = this.all();
+    Object.assign(event.aspects, aspects);
   }
   private element(id: string) {
     return (
@@ -119,86 +124,87 @@ export class NativeHost implements HostPort {
   private pixelFingerprint(texture: HostObject): string {
     return texture ? hashString(texture.getDataURL()) : '';
   }
-  snapshots(doc: UiDocument): Record<Id, NativeSnapshot> {
-    const out: Record<Id, NativeSnapshot> = {};
-    for (const [id, binding] of Object.entries(doc.bindings)) {
-      const e = this.element(binding.elementId),
-        n = doc.nodes[id];
-      if (!e || !n) continue;
-      const isCube = e instanceof this.bb.Cube;
-      const texture = isCube ? e.faces.up.getTexture() : undefined;
-      const rect = isCube
-        ? { x: e.from[0], y: e.from[2], width: e.to[0] - e.from[0], height: e.to[2] - e.from[2] }
-        : { ...n.rect };
-      let parent = e,
-        unsupported: string | undefined;
-      while (parent && parent !== 'root') {
-        if (parent.rotation?.some((v: number) => Math.abs(v) > 1e-6))
-          unsupported = '检测到三维旋转，二维规则已暂停';
-        parent = parent.parent;
-      }
-      if (isCube && Math.abs(e.to[1] - e.from[1] - 0.1) > 1e-5)
-        unsupported = 'Cube 厚度已改变，二维规则已暂停';
-      if (isCube && (rect.width <= 0 || rect.height <= 0)) unsupported = 'Cube 尺寸不适合二维布局';
-      const expectedParent = n.parent ? doc.bindings[n.parent]?.elementId : undefined;
-      if (expectedParent !== (e.parent?.uuid ?? undefined))
-        unsupported = '原生父级已改变，自动布局已暂停';
-      const pixelFingerprint = this.pixelFingerprint(texture);
-      const fingerprint = hashString(
-        JSON.stringify([
+  scene(doc: UiDocument): NativeSceneSnapshot {
+    const scene: NativeSceneSnapshot = { nodes: {}, roots: [], selection: [] };
+    const ids = new Map(Object.entries(doc.bindings).map(([id, b]) => [b.elementId, id]));
+    const accepted = (e: HostObject) => e instanceof this.bb.Cube || e instanceof this.bb.Group;
+    const walk = (items: HostObject[], parentId?: string): string[] => {
+      const order: string[] = [];
+      for (const e of items.filter(accepted)) {
+        const id = ids.get(e.uuid) ?? e.uuid,
+          n = doc.nodes[id] ?? doc.nodes[e[SOURCE_MARKER]],
+          binding = doc.bindings[id] ?? doc.bindings[e[SOURCE_MARKER]];
+        const isCube = e instanceof this.bb.Cube;
+        const t = isCube ? e.faces.up.getTexture() : undefined;
+        const oldOrigin = binding?.groupOrigin ?? e.origin ?? [0, 0, 0];
+        const rect = isCube
+          ? { x: e.from[0], y: e.from[2], width: e.to[0] - e.from[0], height: e.to[2] - e.from[2] }
+          : {
+              x: (n?.rect.x ?? 0) + (e.origin[0] - oldOrigin[0]),
+              y: (n?.rect.y ?? 0) + (e.origin[2] - oldOrigin[2]),
+              width: n?.rect.width ?? 1,
+              height: n?.rect.height ?? 1,
+            };
+        let ancestor = e,
+          unsupported: string | undefined;
+        while (ancestor && ancestor !== 'root') {
+          if (ancestor.rotation?.some((v: number) => Math.abs(v) > 1e-6))
+            unsupported = '检测到三维旋转，二维规则已暂停';
+          ancestor = ancestor.parent;
+        }
+        if (isCube && doc.bindings[id] && Math.abs(e.to[1] - e.from[1] - 0.1) > 1e-5)
+          unsupported = 'Cube 厚度已改变，二维规则已暂停';
+        if (isCube && (rect.width <= 0 || rect.height <= 0))
+          unsupported = 'Cube 尺寸不适合二维布局';
+        const pixelFingerprint = this.pixelFingerprint(t);
+        const fingerprint = hashString(
+          JSON.stringify([
+            rect,
+            e.name,
+            e.visibility !== false,
+            e.locked === true,
+            isCube ? e.to[1] : 0,
+            t?.uuid,
+            pixelFingerprint,
+            isCube ? e.faces.up.uv : null,
+            e.rotation,
+            e.parent?.uuid ?? null,
+          ]),
+        );
+        scene.nodes[id] = {
+          id,
+          elementId: e.uuid,
+          kind: isCube ? 'layer' : 'group',
+          sourceId: e[SOURCE_MARKER] || undefined,
           rect,
-          e.name,
-          e.visibility !== false,
-          e.locked === true,
-          isCube ? e.to[1] : 0,
-          texture?.uuid,
-          pixelFingerprint,
-          isCube ? e.faces.up.uv : null,
-          e.rotation,
-          e.parent?.uuid ?? null,
-        ]),
-      );
-      out[id] = {
-        id,
-        rect,
-        depth: isCube ? e.to[1] : 0,
-        name: e.name,
-        visible: e.visibility !== false,
-        locked: e.locked === true,
-        fingerprint,
-        pixelFingerprint,
-        textureId: texture?.uuid,
-        unsupported,
-        parentId: e.parent?.uuid,
-      };
-    }
-    return out;
-  }
-  unmanaged(doc: UiDocument): NativeSnapshot[] {
-    const managed = new Set(Object.values(doc.bindings).map((b) => b.elementId));
-    return this.project.elements
-      .filter((e: HostObject) => e instanceof this.bb.Cube && !managed.has(e.uuid))
-      .map((e: HostObject) => {
-        const t = e.faces.up.getTexture();
-        const rect = {
-          x: e.from[0],
-          y: e.from[2],
-          width: Math.max(1, e.to[0] - e.from[0]),
-          height: Math.max(1, e.to[2] - e.from[2]),
-        };
-        return {
-          id: e.uuid,
-          rect,
+          depth: isCube ? e.to[1] : 0,
           name: e.name,
-          depth: e.to[1],
           visible: e.visibility !== false,
           locked: e.locked === true,
-          fingerprint: '',
-          pixelFingerprint: this.pixelFingerprint(t),
+          fingerprint,
+          pixelFingerprint,
           textureId: t?.uuid,
-          parentId: e.parent?.uuid,
+          unsupported,
+          parentId,
+          siblingIndex: order.length,
+          children: [],
         };
-      });
+        order.push(id);
+        if (isCube ? e.selected : this.project.selected_groups?.includes(e))
+          scene.selection.push(id);
+        if (!isCube) scene.nodes[id]!.children = walk(e.children, id);
+      }
+      return order;
+    };
+    scene.roots = walk(this.project.outliner);
+    return scene;
+  }
+  snapshots(doc: UiDocument): Record<Id, NativeSnapshot> {
+    const nodes = this.scene(doc).nodes;
+    return Object.fromEntries(Object.entries(nodes).filter(([id]) => !!doc.bindings[id]));
+  }
+  unmanaged(doc: UiDocument): NativeSnapshot[] {
+    return Object.values(this.scene(doc).nodes).filter((n) => !doc.bindings[n.id]);
   }
   pixels(textureId: string): Pixels | null {
     const t = this.texture(textureId);
@@ -360,7 +366,9 @@ export class NativeHost implements HostPort {
       element.visibility = n.visible;
       element.locked = n.locked;
       if (created || old?.parent !== n.parent || reordered) element.addTo(parent ?? 'root');
+      element[SOURCE_MARKER] = id;
       if (n.kind !== 'layer') {
+        binding.groupOrigin = [...element.origin] as [number, number, number];
         changedGroups.push(element);
         continue;
       }
@@ -409,6 +417,7 @@ export class NativeHost implements HostPort {
         element.faces[face].texture = face === 'up' ? texture.uuid : null;
       element.faces.up.uv = [0, 0, texture.uv_width, texture.uv_height];
     }
+    this.onBeforeViewUpdate?.(doc);
     this.bb.Canvas.updateView({
       elements: changedElements,
       groups: changedGroups,
@@ -422,13 +431,18 @@ export class NativeHost implements HostPort {
   }
   select(doc: UiDocument, ids: Id[]) {
     if (!this.active()) return;
+    const selected = topSelection(doc, this.scene(doc).selection);
+    if (JSON.stringify([...selected].sort()) === JSON.stringify([...ids].sort())) return;
+    this.bb.Undo.initSelection();
     this.bb.unselectAllElements();
     for (const id of ids) {
       const e = this.element(doc.bindings[id]?.elementId ?? '');
       if (e instanceof this.bb.Group) e.multiSelect?.();
       else e?.markAsSelected();
+      e?.showInOutliner?.();
     }
     this.bb.updateSelection();
+    this.bb.Undo.finishSelection('Select UI elements');
   }
   beginPaint(doc: UiDocument, id: Id, onSource: (png: string) => Promise<void>) {
     const node = doc.nodes[id],
