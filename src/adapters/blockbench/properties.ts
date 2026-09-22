@@ -1,3 +1,10 @@
+import {
+  setDirection,
+  setPositioning,
+  setSizeMode,
+  sizeModeError,
+} from '../../domain/layout-authoring';
+import { registerLayoutFields } from './layout-fields';
 import type { Studio } from '../../application/studio';
 import type { Id, UiDocument, UiNode } from '../../domain/types';
 import { defaultAppearance, defaultFrame } from '../../domain/types';
@@ -12,7 +19,7 @@ interface Field {
   type: string;
   propertyType?: string;
   read(node: UiNode): unknown;
-  write?(node: UiNode, value: any): void;
+  write?(node: UiNode, value: any, doc: UiDocument): void;
   applies?(node: UiNode): boolean;
   options?: Record<string, string>;
   dimensions?: number;
@@ -105,17 +112,15 @@ const all: Field[] = [
   {
     id: 'positioning',
     label: 'UI 定位',
-    type: 'select',
+    type: 'inline_select',
     options: { flow: '参与布局', absolute: '绝对定位' },
     read: (n) => n.layout.positioning,
-    write: (n, v) => {
-      n.layout.positioning = v;
-    },
+    write: (n, v, doc) => setPositioning(doc, n, v),
   },
   ...(['anchorFrom', 'anchorTo'] as const).map((key, i) => ({
     id: key,
     label: i ? 'UI 自身锚点' : 'UI 父锚点',
-    type: 'select',
+    type: 'mcui_anchor',
     options: anchors,
     read: (n: UiNode) => n.layout[key].join(','),
     write: (n: UiNode, v: string) => {
@@ -223,7 +228,7 @@ const all: Field[] = [
   {
     id: 'image_anchor',
     label: 'UI 图片锚点',
-    type: 'select',
+    type: 'mcui_anchor',
     options: anchors,
     applies: (n) => n.content?.kind === 'image',
     read: (n) => (n.content?.kind === 'image' ? n.content.anchor.join(',') : ''),
@@ -294,15 +299,12 @@ const all: Field[] = [
   },
   {
     id: 'direction',
-    label: 'UI 自动布局',
-    type: 'select',
-    options: { free: '自由布局', row: '横向', column: '纵向' },
+    label: 'UI 排列',
+    type: 'inline_select',
+    options: { free: '自由', row: '→ 横向', column: '↓ 纵向' },
     applies: (n) => n.kind === 'frame',
     read: (n) => n.frame?.direction ?? 'free',
-    write: (n, v) => {
-      n.frame ??= defaultFrame();
-      n.frame.direction = v;
-    },
+    write: (n, v, doc) => setDirection(doc, n, v),
   },
   {
     id: 'gap',
@@ -319,7 +321,7 @@ const all: Field[] = [
   {
     id: 'padding',
     label: 'UI 内边距',
-    type: 'vector',
+    type: 'mcui_padding',
     propertyType: 'vector4',
     dimensions: 4,
     min: 0,
@@ -327,31 +329,48 @@ const all: Field[] = [
     applies: (n) => n.kind === 'frame',
     read: (n) => n.frame?.padding ?? [0, 0, 0, 0],
     write: (n, v) => {
-      n.frame!.padding = [...v] as [number, number, number, number];
+      for (let i = 0; i < 4; i++)
+        if (v.changedSide === undefined || v.changedSide === i) n.frame!.padding[i] = v[i];
     },
   },
   {
-    id: 'justify',
-    label: 'UI 主轴对齐',
-    type: 'select',
-    options: { start: '起点', center: '居中', end: '终点', 'space-between': '两端分布' },
-    applies: (n) => n.kind === 'frame',
-    read: (n) => n.frame?.justify,
-    write: (n, v) => {
-      n.frame!.justify = v;
+    id: 'alignment',
+    label: 'UI 子项对齐',
+    type: 'mcui_alignment',
+    propertyType: 'array',
+    applies: (n) => n.kind === 'frame' && n.frame?.direction !== 'free',
+    read: (n) => {
+      const f = n.frame ?? defaultFrame(),
+        index = (v: string) => Math.max(0, ['start', 'center', 'end'].indexOf(v));
+      return [
+        index(f.direction === 'row' ? f.justify : f.align),
+        index(f.direction === 'row' ? f.align : f.justify),
+        f.justify === 'space-between',
+        f.direction,
+      ];
     },
-  },
-  {
-    id: 'align',
-    label: 'UI 交叉轴对齐',
-    type: 'select',
-    options: { start: '起点', center: '居中', end: '终点' },
-    applies: (n) => n.kind === 'frame',
-    read: (n) => n.frame?.align,
     write: (n, v) => {
-      n.frame!.align = v;
+      const f = n.frame!;
+      f.justify = v[2]
+        ? 'space-between'
+        : (['start', 'center', 'end'] as const)[f.direction === 'row' ? v[0] : v[1]]!;
+      f.align = (['start', 'center', 'end'] as const)[f.direction === 'row' ? v[1] : v[0]]!;
     },
+    description:
+      '点击九点图直接设置子项在容器内的对齐位置。横向／纵向自动换算主轴与交叉轴；两端分布将剩余空间分配到子项之间，此时另一轴仍可选择。',
   },
+  ...(['width', 'height'] as const).map(
+    (axis): Field => ({
+      id: 'sizing_' + axis,
+      label: axis === 'width' ? 'UI 宽度策略' : 'UI 高度策略',
+      type: 'inline_select',
+      options: { fixed: '固定', fill: '填充', hug: '包裹', expression: '%' },
+      read: (n) => n.layout[axis].kind,
+      write: (n, v) => setSizeMode(n, axis, v),
+      description:
+        '固定取当前显示尺寸；填充占用父级剩余空间；包裹根据内容计算；% 初始为父级 100%。精确数值和百分比±像素仍在“元素”的 W/H 输入。根节点不能使用父级百分比，父包裹与子填充的循环会回滚。',
+    }),
+  ),
 ];
 
 const explanations: Record<string, string> = {
@@ -391,8 +410,14 @@ export class PropertyBridge {
   private tabsKey = '';
   private refreshing = false;
   private panels: HostObject[] = [];
+  private advancedLayout = false;
+  private eligibilityDoc?: UiDocument;
+  private eligibilitySelection = '';
+  private sizeErrors = new Map<string, string | null>();
   readonly fieldIds = new Set([
     SOURCE_MARKER,
+    FIELD_PREFIX + 'justify',
+    FIELD_PREFIX + 'align',
     ...all.map((f) => FIELD_PREFIX + f.id),
     FIELD_PREFIX + 'selection_info',
   ]);
@@ -401,6 +426,13 @@ export class PropertyBridge {
     readonly current: () => Studio | null,
   ) {
     this.registerDraft();
+    const widgets = registerLayoutFields(bb, () =>
+      this.targets()
+        .map((n) => n.id)
+        .sort()
+        .join('|'),
+    );
+    this.life.add(() => widgets.dispose());
     for (const [type, ctor] of [
       ['cube', bb.Cube],
       ['group', bb.Group],
@@ -422,7 +454,24 @@ export class PropertyBridge {
     this.createSection('content', 'UI 内容', 2);
   }
   private createSection(kind: 'layout' | 'content', name: string, index: number) {
-    const fields = all.filter((f) => section(f) === kind),
+    const order = [
+      'direction',
+      'alignment',
+      'gap',
+      'padding',
+      'sizing_width',
+      'sizing_height',
+      'positioning',
+      'anchorFrom',
+      'anchorTo',
+      'minWidth',
+      'minHeight',
+      'maxWidth',
+      'maxHeight',
+    ];
+    const fields = all
+        .filter((f) => section(f) === kind)
+        .sort((a, b) => (kind === 'layout' ? order.indexOf(a.id) - order.indexOf(b.id) : 0)),
       config: Record<string, unknown> = {};
     const applicable = () => {
       const nodes = this.targets();
@@ -435,7 +484,19 @@ export class PropertyBridge {
         )
       );
     };
-    for (const field of fields)
+    if (kind === 'layout')
+      config.mcui_layout_selection = {
+        type: 'info',
+        text: '排列与对齐控制子项；尺寸与定位控制当前对象。',
+      };
+    for (const field of fields) {
+      if (kind === 'layout' && field.id === 'minWidth')
+        config.mcui_advanced_layout = {
+          type: 'checkbox',
+          label: '尺寸约束',
+          value: this.advancedLayout,
+          description: '展开最小／最大宽高。折叠不会清除已设置的约束。',
+        };
       config[FIELD_PREFIX + field.id] = {
         label: field.label.replace(/^UI /, ''),
         type: field.type,
@@ -448,7 +509,32 @@ export class PropertyBridge {
         force_step: field.type === 'vector',
         step: 1,
         condition: () =>
-          applicable() && this.targets().every((n) => !field.applies || field.applies(n)),
+          applicable() &&
+          (!/^(min|max)(Width|Height)$/.test(field.id) || this.advancedLayout) &&
+          this.targets().every((n) => {
+            if (field.applies && !field.applies(n)) return false;
+            if (['gap', 'padding'].includes(field.id) && n.frame?.direction === 'free')
+              return false;
+            if (['anchorFrom', 'anchorTo'].includes(field.id)) {
+              const parent = n.parent ? this.current()?.state.doc.nodes[n.parent] : undefined;
+              return (
+                !!parent &&
+                (n.layout.positioning === 'absolute' || parent.frame?.direction === 'free')
+              );
+            }
+            if (field.id === 'positioning') return !!n.parent;
+            return true;
+          }),
+      };
+    }
+    if (kind === 'layout')
+      config.mcui_wrap_selection = {
+        type: 'buttons',
+        buttons: ['组成自动布局'],
+        description:
+          '将同父级选区组成 Frame，按当前位置推断排列方向和平均间距，固定子项当前尺寸，Frame 包裹内容；可一次撤销。',
+        condition: () => this.targets().length > 0,
+        click: () => this.bb.BarItems.mcui_wrap_layout?.trigger(),
       };
     if (kind === 'content')
       config.mcui_rasterize = {
@@ -486,6 +572,11 @@ export class PropertyBridge {
     panel.form.on('input', ({ result, changed_keys }: HostObject) => {
       const app = this.current();
       if (!app || this.disposed) return;
+      if (changed_keys?.includes('mcui_advanced_layout')) {
+        this.advancedLayout = !!result.mcui_advanced_layout;
+        panel.form.updateValues();
+        return;
+      }
       const ids = this.targets().map((n) => n.id);
       app.execute('修改 ' + name, (doc) => {
         for (const key of changed_keys ?? []) {
@@ -493,12 +584,52 @@ export class PropertyBridge {
           if (!field?.write) continue;
           for (const id of ids) {
             const n = doc.nodes[id]!;
-            if (!field.applies || field.applies(n)) field.write(n, result[key]);
+            if (!field.applies || field.applies(n)) field.write(n, result[key], doc);
           }
         }
       });
       this.refresh(false);
     });
+    if (kind === 'layout') {
+      this.life.listen(
+        panel.node,
+        'click',
+        ((event: MouseEvent) => {
+          const item = (event.target as HTMLElement).closest('[data-mcui-unavailable]');
+          if (item) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            this.bb.Blockbench.showQuickMessage(item.getAttribute('title'), 4000);
+          }
+        }) as EventListener,
+        true,
+      );
+      this.life.listen(panel.node, 'keydown', ((event: KeyboardEvent) => {
+        const item = (event.target as HTMLElement).closest(
+          '.form_inline_select li',
+        ) as HTMLElement | null;
+        if (!item) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          event.stopPropagation();
+          item.click();
+        }
+        if (['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+          event.preventDefault();
+          event.stopPropagation();
+          const options = Array.from(
+            item.parentElement!.querySelectorAll<HTMLElement>('li:not([data-mcui-unavailable])'),
+          );
+          const index = options.indexOf(item),
+            next =
+              options[
+                (index + (event.key === 'ArrowRight' ? 1 : options.length - 1)) % options.length
+              ];
+          next?.focus();
+          next?.click();
+        }
+      }) as EventListener);
+    }
     this.panels.push(panel);
     this.life.add(panel);
   }
@@ -570,7 +701,7 @@ export class PropertyBridge {
                     app.executeWithinHostEdit(field.label, (doc) => {
                       for (const id of ids) {
                         const n = doc.nodes[id]!;
-                        if (!field.applies || field.applies(n)) field.write!(n, value);
+                        if (!field.applies || field.applies(n)) field.write!(n, value, doc);
                       }
                     });
                     this.hydrate(app.state.doc);
@@ -627,6 +758,60 @@ export class PropertyBridge {
         const own: Record<string, unknown> = {};
         if (targets[0]) for (const f of all) own[FIELD_PREFIX + f.id] = f.read(targets[0]) ?? '';
         extra.form.setValues(own);
+        if (extra.id === 'mcui_layout') {
+          if (this.eligibilityDoc !== app.state.doc || this.eligibilitySelection !== key) {
+            this.sizeErrors.clear();
+            for (const axis of ['width', 'height'] as const)
+              for (const mode of ['fixed', 'fill', 'hug', 'expression'] as const)
+                this.sizeErrors.set(
+                  axis + ':' + mode,
+                  targets.length
+                    ? sizeModeError(
+                        app.state.doc,
+                        targets.map((n) => n.id),
+                        axis,
+                        mode,
+                      )
+                    : null,
+                );
+            this.eligibilityDoc = app.state.doc;
+            this.eligibilitySelection = key;
+          }
+          for (const item of extra.node.querySelectorAll('.form_inline_select li')) {
+            const axis = item.closest('.form_bar_mcui_sizing_width')
+              ? 'width'
+              : item.closest('.form_bar_mcui_sizing_height')
+                ? 'height'
+                : null;
+            const reason = axis ? this.sizeErrors.get(axis + ':' + item.getAttribute('key')) : null;
+            item.setAttribute('role', 'button');
+            item.setAttribute('tabindex', reason ? '-1' : '0');
+            item.setAttribute('aria-pressed', String(item.classList.contains('selected')));
+            item.setAttribute('aria-disabled', String(!!reason));
+            if (reason) {
+              item.setAttribute('data-mcui-unavailable', '');
+              item.setAttribute('title', reason);
+            } else {
+              item.removeAttribute('data-mcui-unavailable');
+              item.removeAttribute('title');
+            }
+          }
+          const hint = extra.form.form_data.mcui_layout_selection?.bar.querySelector('.small_text');
+          if (hint) {
+            const constrained = targets.some(
+              (n) =>
+                n.layout.minWidth !== 1 ||
+                n.layout.minHeight !== 1 ||
+                n.layout.maxWidth !== undefined ||
+                n.layout.maxHeight !== undefined,
+            );
+            hint.textContent =
+              (targets.length > 1
+                ? `已选 ${targets.length} 项：图示显示首项，修改应用到选区。`
+                : '排列与对齐控制子项；尺寸与定位控制当前对象。') +
+              (constrained ? ' 已设置尺寸约束。' : '');
+          }
+        }
         extra.form.updateLabelWidth(true);
       }
       const tabsKey = targets.map((n) => `${n.id}:${n.kind}:${n.content?.kind ?? ''}`).join('|');
@@ -658,7 +843,7 @@ export class PropertyBridge {
     if (!field?.write || !app) throw new Error('当前选区不可编辑');
     const ids = this.targets().map((n) => n.id);
     app.validateChange((doc) => {
-      for (const id of ids) field.write!(doc.nodes[id]!, value);
+      for (const id of ids) field.write!(doc.nodes[id]!, value, doc);
     });
   }
   private registerDraft() {

@@ -426,6 +426,68 @@ export class Studio {
       n.rect = { ...r };
     }
   }
+  wrapAutoLayout(): Id | null {
+    const ids = topSelection(this.state.doc, this.state.selection);
+    const id = this.images.id();
+    const applied = this.execute('将所选项组成自动布局', (doc) => {
+      const selected = ids.map((key) => doc.nodes[key]!);
+      if (!selected.length || selected.some((n) => n.parent !== selected[0]!.parent))
+        throw new Error('请先选择同一父级下的图层或 Frame');
+      if (selected.some((n) => n.suspended || this.state.scene.nodes[n.id]?.locked))
+        throw new Error('请先解锁选区并处理暂停的布局规则');
+      const rect = bounds(selected.map((n) => n.rect))!;
+      const spreadX =
+        Math.max(...selected.map((n) => n.rect.x)) - Math.min(...selected.map((n) => n.rect.x));
+      const spreadY =
+        Math.max(...selected.map((n) => n.rect.y)) - Math.min(...selected.map((n) => n.rect.y));
+      const row = spreadX >= spreadY;
+      selected.sort((a, b) => (row ? a.rect.x - b.rect.x : a.rect.y - b.rect.y));
+      const gaps = selected
+        .slice(1)
+        .map((n, i) =>
+          row
+            ? n.rect.x - selected[i]!.rect.x - selected[i]!.rect.width
+            : n.rect.y - selected[i]!.rect.y - selected[i]!.rect.height,
+        );
+      const frame = createNode(id, '自动布局', 'frame', rect);
+      frame.parent = selected[0]!.parent;
+      frame.frame!.direction = row ? 'row' : 'column';
+      frame.frame!.gap = gaps.length
+        ? Math.max(0, Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length))
+        : 8;
+      frame.frame!.padding = [0, 0, 0, 0];
+      frame.layout.width = { kind: 'hug' };
+      frame.layout.height = { kind: 'hug' };
+      frame.layout.positioning = selected[0]!.layout.positioning;
+      const parent = frame.parent ? doc.nodes[frame.parent] : undefined;
+      frame.layout.offset = {
+        x: rect.x - (parent?.rect.x ?? 0),
+        y: rect.y - (parent?.rect.y ?? 0),
+      };
+      const list = parent ? parent.children : doc.roots;
+      const at = Math.min(...ids.map((key) => list.indexOf(key)));
+      const remaining = list.filter((key) => !ids.includes(key));
+      remaining.splice(at, 0, id);
+      list.splice(0, list.length, ...remaining);
+      for (const n of selected) {
+        n.parent = id;
+        n.layout.width = fixed(n.rect.width);
+        n.layout.height = fixed(n.rect.height);
+        n.layout.positioning = 'flow';
+        n.layout.offset = { x: 0, y: 0 };
+        delete n.layout.offsetPercent;
+        n.layout.anchorFrom = [0, 0];
+        n.layout.anchorTo = [0, 0];
+        frame.children.push(n.id);
+      }
+      doc.nodes[id] = frame;
+    });
+    if (applied) {
+      this.select([id]);
+      return id;
+    }
+    return null;
+  }
   transformSelection(original: Rect, target: Rect, preserveResolution = false) {
     const ids = this.state.selection;
     this.previewGesture((doc) => {

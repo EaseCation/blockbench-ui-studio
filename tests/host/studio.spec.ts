@@ -978,3 +978,177 @@ test('直接绘制有外观的成品会保护像素，显式栅格化后可继�
   expect(result.appearance).toBeNull();
   expect(result.active).toBe(true);
 });
+
+test('图形化自动布局：方向、九点对齐、两端分布及边距联动', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('layer', root),
+      b = app.add('layer', root);
+    app.execute('准备布局预览', (doc: any) => {
+      doc.nodes[root].layout.width = { kind: 'fixed', value: 180 };
+      doc.nodes[root].layout.height = { kind: 'fixed', value: 110 };
+      for (const [id, color] of [
+        [a, '#ed9065ff'],
+        [b, '#64badcff'],
+      ])
+        doc.nodes[id].appearance = {
+          fill: 'solid',
+          color,
+          endColor: color,
+          angle: 0,
+          strokeColor: '#ffffff',
+          strokeWidth: 1,
+        };
+    });
+    window.Blockbench.mcuiStudio.getViewport().fit();
+    app.select([root]);
+  });
+  await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
+  await page.locator('#panel_mcui_layout .form_bar_mcui_direction li[key="row"]').click();
+  await page.getByRole('button', { name: '子项对齐：上右', exact: true }).click();
+  const frame = () =>
+    page.evaluate(() => {
+      const app = window.Blockbench.mcuiStudio.getStudio();
+      return app.state.doc.nodes[app.state.selection[0]].frame;
+    });
+  expect(await frame()).toMatchObject({ direction: 'row', justify: 'end', align: 'start' });
+  await page.locator('#panel_mcui_layout .form_bar_mcui_direction li[key="column"]').click();
+  await page.getByRole('button', { name: '子项对齐：上右', exact: true }).click();
+  expect(await frame()).toMatchObject({ direction: 'column', justify: 'start', align: 'end' });
+  await page.getByRole('button', { name: '两端分布', exact: true }).click();
+  expect(await frame()).toMatchObject({ justify: 'space-between', align: 'end' });
+  const top = page.getByRole('spinbutton', { name: '上内边距' });
+  await top.fill('6');
+  await top.press('Enter');
+  expect((await frame()).padding).toEqual([6, 6, 6, 6]);
+  await page.getByRole('button', { name: '联动四边内边距' }).click();
+  const left = page.getByRole('spinbutton', { name: '左内边距' });
+  await left.fill('12');
+  await left.press('Enter');
+  expect((await frame()).padding).toEqual([6, 6, 6, 12]);
+  await page.evaluate(() => window.Undo.undo());
+  expect((await frame()).padding).toEqual([6, 6, 6, 6]);
+  await page.screenshot({ path: '.cache/mcui-visual-layout.png' });
+});
+
+test('多选边距只改一边；尺寸快捷规则、锚点和约束折叠', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('frame', root),
+      b = app.add('frame', root);
+    app.update(a, (n: any) => {
+      n.frame.direction = 'row';
+      n.frame.padding = [1, 2, 3, 4];
+    });
+    app.update(b, (n: any) => {
+      n.frame.direction = 'row';
+      n.frame.padding = [5, 6, 7, 8];
+    });
+    app.select([a, b]);
+  });
+  await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
+  const left = page.getByRole('spinbutton', { name: '左内边距' });
+  await left.fill('10');
+  await left.press('Enter');
+  expect(
+    await page.evaluate(() => {
+      const app = window.Blockbench.mcuiStudio.getStudio();
+      return app.state.selection.map((id: string) => app.state.doc.nodes[id].frame.padding);
+    }),
+  ).toEqual([
+    [1, 2, 3, 10],
+    [5, 6, 7, 10],
+  ]);
+  await page.evaluate(() => {
+    const app = window.Blockbench.mcuiStudio.getStudio();
+    app.select([app.state.selection[0]]);
+  });
+  await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
+  await page.locator('#panel_mcui_layout .form_bar_mcui_sizing_width li[key="fill"]').click();
+  expect(
+    await page.evaluate(() => {
+      const app = window.Blockbench.mcuiStudio.getStudio();
+      return app.state.doc.nodes[app.state.selection[0]].layout.width.kind;
+    }),
+  ).toBe('fill');
+  await page.getByRole('button', { name: '父锚点：中中', exact: true }).click();
+  await page.getByRole('button', { name: '自身锚点：中中', exact: true }).click();
+  await expect(page.locator('#panel_mcui_layout .form_bar_mcui_maxWidth')).toBeHidden();
+  await page.locator('#panel_mcui_layout .form_bar_mcui_advanced_layout input').check();
+  await expect(page.locator('#panel_mcui_layout .form_bar_mcui_maxWidth')).toBeVisible();
+});
+
+test('一键组成自动布局并打开布局标签，撤销恢复层级，卸载注销图形控件', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('layer', root),
+      b = app.add('layer', root);
+    app.update(b, (n: any) => {
+      n.layout.offset.x = 48;
+    });
+    app.select([a, b]);
+    window.BarItems.mcui_wrap_layout.trigger();
+  });
+  await expect(page.locator('#panel_mcui_layout')).toBeVisible();
+  expect(
+    await page.evaluate(() => {
+      const app = window.Blockbench.mcuiStudio.getStudio(),
+        n = app.state.doc.nodes[app.state.selection[0]];
+      return [n.name, n.frame.direction, n.frame.gap, n.children.length];
+    }),
+  ).toEqual(['自动布局', 'row', 8, 2]);
+  await page.evaluate(() => window.Undo.undo());
+  expect(
+    await page.evaluate(() => {
+      const app = window.Blockbench.mcuiStudio.getStudio();
+      return app.state.doc.nodes[app.state.doc.roots[0]].children.length;
+    }),
+  ).toBe(2);
+  await page.evaluate(() => window.Plugins.registered.mcui_studio.onunload());
+  expect(await page.evaluate(() => !!(window as any).FormElement.types.mcui_alignment)).toBe(false);
+  await expect(page.locator('.mcui-matrix')).toHaveCount(0);
+});
+
+test('尺寸策略预检、键盘方向操作和切回自由布局保持位置', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    app.add('layer', root);
+    app.add('layer', root);
+    app.select([root]);
+  });
+  await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
+  await expect(
+    page.locator('#panel_mcui_layout .form_bar_mcui_sizing_width li[key="expression"]'),
+  ).toHaveAttribute('aria-disabled', 'true');
+  await page.locator('#panel_mcui_layout .form_bar_mcui_direction li[key="row"]').click();
+  const middle = page.getByRole('button', { name: '子项对齐：中中', exact: true });
+  await middle.focus();
+  await middle.press('ArrowRight');
+  const before = await page.evaluate(() => {
+    const app = window.Blockbench.mcuiStudio.getStudio();
+    return {
+      rects: window.Cube.all.map((c: any) => [...c.from, ...c.to]),
+      frame: app.state.doc.nodes[app.state.selection[0]].frame,
+      error: app.state.error,
+    };
+  });
+  expect(before.frame).toMatchObject({ justify: 'end', align: 'center' });
+  expect(before.error).toBeNull();
+  await page.locator('#panel_mcui_layout .form_bar_mcui_direction li[key="free"]').click();
+  expect(await page.evaluate(() => window.Cube.all.map((c: any) => [...c.from, ...c.to]))).toEqual(
+    before.rects,
+  );
+  await expect(page.getByRole('button', { name: '子项对齐：中中', exact: true })).toBeHidden();
+});

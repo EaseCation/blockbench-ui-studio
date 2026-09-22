@@ -205,3 +205,49 @@ describe('独立纹理分辨率与外观', () => {
     expect(host.bitmaps[id]!.width).toBe(32);
   });
 });
+
+describe('快捷自动布局', () => {
+  it('包装同父级选区，推断横向和间距，固定子项尺寸且只提交一次', () => {
+    const { app, host } = fixture();
+    const a = app.add('layer'),
+      b = app.add('layer');
+    app.update(a, (n) => {
+      n.layout.offset = { x: 10, y: 20 };
+    });
+    app.update(b, (n) => {
+      n.layout.offset = { x: 50, y: 20 };
+    });
+    const parent = app.state.doc.nodes[a]!.parent;
+    app.select([b, a]);
+    const commits = host.commits,
+      renders = host.renders;
+    const id = app.wrapAutoLayout()!;
+    const frame = app.state.doc.nodes[id]!;
+    expect(frame.parent).toBe(parent);
+    expect(frame.frame!.direction).toBe('row');
+    expect(frame.frame!.gap).toBe(8);
+    expect(frame.children).toEqual([a, b]);
+    expect(frame.rect).toMatchObject({ x: 10, y: 20, width: 72, height: 32 });
+    expect(app.state.doc.nodes[a]!.layout.width).toEqual({ kind: 'fixed', value: 32 });
+    expect(host.commits - commits).toBe(1);
+    expect(host.renders).toBe(renders);
+    expect(app.state.selection).toEqual([id]);
+  });
+  it('跨父级或锁定选区拒绝包装，不产生部分修改', () => {
+    const { app, host } = fixture();
+    const a = app.add('layer'),
+      frame = app.add('frame'),
+      b = app.add('layer', frame);
+    app.select([a, b]);
+    const doc = JSON.stringify(app.state.doc),
+      commits = host.commits;
+    expect(app.wrapAutoLayout()).toBeNull();
+    expect(JSON.stringify(app.state.doc)).toBe(doc);
+    expect(host.commits).toBe(commits);
+    app.update(a, (n) => {
+      n.locked = true;
+    });
+    app.select([a]);
+    expect(app.wrapAutoLayout()).toBeNull();
+  });
+});

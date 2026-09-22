@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createDocument, createNode, defaultFrame, fixed } from '../../src/domain/types';
+import { setDirection, setPositioning, sizeModeError } from '../../src/domain/layout-authoring';
 import { layout } from '../../src/domain/layout';
 import { parseSize, parseOffset } from '../../src/domain/expression';
 function fixture() {
@@ -115,5 +116,41 @@ describe('百分比坐标', () => {
     d.nodes.p!.layout.width = { kind: 'hug' };
     d.nodes.a!.layout.offsetPercent = { x: 0.5, y: 0 };
     expect(() => layout(d)).toThrow(/循环/);
+  });
+});
+
+describe('布局编辑保持显示位置', () => {
+  it('退出自动布局冻结 Fill 子项和 Hug 容器，保留解析后的边界', () => {
+    const doc = fixture(),
+      parent = doc.nodes.p!;
+    doc.nodes.a!.layout.width = { kind: 'fill' };
+    parent.frame!.padding = [4, 5, 6, 7];
+    const before = layout(doc);
+    for (const [id, n] of Object.entries(doc.nodes)) n.rect = { ...before.nodes[id]!.rect };
+    setDirection(doc, parent, 'free');
+    const after = layout(doc);
+    expect(after.nodes.a!.rect).toEqual(before.nodes.a!.rect);
+    expect(after.nodes.b!.rect).toEqual(before.nodes.b!.rect);
+  });
+  it('脱离自动排列转绝对定位时保持位置和尺寸', () => {
+    const doc = fixture(),
+      parent = doc.nodes.p!,
+      child = doc.nodes.b!;
+    child.layout.width = { kind: 'fill' };
+    parent.frame!.justify = 'end';
+    parent.frame!.align = 'end';
+    const before = layout(doc);
+    for (const [id, n] of Object.entries(doc.nodes)) n.rect = { ...before.nodes[id]!.rect };
+    setPositioning(doc, child, 'absolute');
+    expect(layout(doc).nodes.b!.rect).toEqual(before.nodes.b!.rect);
+  });
+  it('尺寸候选预检阻止根百分比和循环而不改文档', () => {
+    const doc = fixture();
+    doc.nodes.p!.layout.width = { kind: 'hug' };
+    const before = JSON.stringify(doc);
+    expect(sizeModeError(doc, ['p'], 'width', 'expression')).toContain('没有父级');
+    expect(sizeModeError(doc, ['a'], 'width', 'fill')).toContain('循环');
+    expect(sizeModeError(doc, ['a'], 'width', 'fixed')).toBeNull();
+    expect(JSON.stringify(doc)).toBe(before);
   });
 });

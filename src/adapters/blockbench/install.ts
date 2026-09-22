@@ -237,6 +237,19 @@ export function install(bb: HostRuntime) {
     if (current && n) fn(current, n.id);
   };
   const actions = [
+    command(
+      'mcui_wrap_layout',
+      'UI：将所选项组成自动布局',
+      'view_quilt',
+      () => {
+        if (current?.wrapAutoLayout()) {
+          properties.refresh();
+          const panel = bb.Interface.Panels.mcui_layout;
+          (panel.getHostPanel?.() ?? panel).selectTab(panel);
+        }
+      },
+      () => !!current && bb.Modes.edit && properties.targets().length > 0,
+    ),
     command('mcui_add_layer', '新增 UI 绘画图层', 'add_photo_alternate', () =>
       current?.add('layer', parent()),
     ),
@@ -423,7 +436,7 @@ export function install(bb: HostRuntime) {
     });
   }
   const byId = (id: string) => actions.find((a) => a.id === id)!;
-  for (const id of ['mcui_add_layer', 'mcui_add_frame', 'mcui_import_image']) {
+  for (const id of ['mcui_add_layer', 'mcui_add_frame', 'mcui_wrap_layout', 'mcui_import_image']) {
     const action = byId(id);
     bb.Toolbars.outliner.add(action);
     bb.BarItems.add_element.side_menu.addAction(action);
@@ -439,6 +452,7 @@ export function install(bb: HostRuntime) {
   }
   for (const ctor of [bb.Cube, bb.Group])
     for (const id of [
+      'mcui_wrap_layout',
       'mcui_edit_source',
       'mcui_nine_slice',
       'mcui_content_preview',
@@ -631,7 +645,7 @@ export function install(bb: HostRuntime) {
   );
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.3.0',
+    version: '0.4.0',
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,
