@@ -385,3 +385,37 @@ test('绘画层缩放后仍按实际像素绘画，复制保持独立可编辑�
     error: null,
   });
 });
+
+for (const method of ['button', 'double-click'] as const) {
+  test(`开始页新建入口：${method} 只创建一个通用模型，卸载清理入口`, async ({ page }) => {
+    await start(page);
+    const entry = page.locator('.format_entry[format="mcui_studio"]');
+    await expect(entry).toBeVisible();
+    await expect(entry).toContainText('MC UI');
+    if (method === 'button') {
+      await entry.click();
+      await page.getByRole('button', { name: /创建 MC UI 项目/ }).click();
+    } else {
+      await entry.dblclick();
+    }
+    await page.waitForFunction(() => !!window.Blockbench.mcuiStudio.getStudio());
+    expect(
+      await page.evaluate(() => {
+        const app = window.Blockbench.mcuiStudio.getStudio();
+        return {
+          projects: (window as any).ModelProject.all.length,
+          format: window.Codecs.project.compile({ raw: true }).meta.model_format,
+          width: app.state.doc.nodes[app.state.doc.roots[0]].rect.width,
+          height: app.state.doc.nodes[app.state.doc.roots[0]].rect.height,
+          ortho: window.Preview.selected.isOrtho,
+        };
+      }),
+    ).toEqual({ projects: 1, format: 'free', width: 320, height: 180, ortho: true });
+    await page.evaluate(() => window.Plugins.registered.mcui_studio.onunload());
+    await expect(entry).toHaveCount(0);
+    expect(await page.evaluate(() => !!(window as any).ModelLoader.loaders.mcui_studio)).toBe(
+      false,
+    );
+    expect(await page.evaluate(() => window.Project.format.id)).toBe('free');
+  });
+}

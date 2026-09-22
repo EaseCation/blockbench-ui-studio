@@ -11,7 +11,9 @@ npm ci
 npm run check
 ```
 
-在 Blockbench 的 **文件 → 插件 → 从文件加载插件** 中选择 `dist/mcui_studio.js`。然后在 **工具 → 新建 MC UI 项目** 创建项目。
+在 Blockbench 的 **文件 → 插件 → 从文件加载插件** 中选择 `dist/mcui_studio.js`。然后在开始页 **新建 → 总体 → MC UI** 中点击 **创建 MC UI 项目**，也可以双击 MC UI 直接创建。**工具 → 新建 MC UI 项目** 入口仍然可用。
+
+MC UI 是原生创建入口，项目实际仍保存为通用模型（Generic Model）的 `.bbmodel`，未安装插件的客户端也能打开。
 
 开发时运行 `npm run dev`，重新加载本地插件即可。源仓库不要求放在 Blockbench 目录中；构建也不依赖 Blockbench 源码路径。
 

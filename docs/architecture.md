@@ -13,12 +13,12 @@ Plugin Entry ──> Blockbench Adapter ──> Application ──> Domain
 
 Blockbench 接触面限定为：
 
-| 文件             | 上游接触点                                      |
-| ---------------- | ----------------------------------------------- |
-| `runtime.ts`     | 宿主门面、能力探测和资源释放                    |
-| `native-host.ts` | Cube／Group／Texture、原生存储与 Undo、源图绘画 |
-| `viewport.ts`    | 原生 Preview、相机、视口 DOM、Tool 与事件捕获   |
-| `install.ts`     | 注册命令／面板／生命周期、剪贴板动作和装配      |
+| 文件             | 上游接触点                                                          |
+| ---------------- | ------------------------------------------------------------------- |
+| `runtime.ts`     | 宿主门面、能力探测和资源释放                                        |
+| `native-host.ts` | Cube／Group／Texture、原生存储与 Undo、源图绘画                     |
+| `viewport.ts`    | 原生 Preview、相机、视口 DOM、Tool 与事件捕获                       |
+| `install.ts`     | 注册创建入口（ModelLoader）／命令／面板／生命周期、剪贴板动作和装配 |
 
 宿主对象只能存在于上述适配器中。`HostPort` 等自有接口只接受纯数据和 ID。官方类型包携带 Electron、Vue 等额外依赖且发布版本落后于目标源码，因此本工程采用局部宿主门面，不把官方全局声明或宿主运行库引入业务编译环境；真实宿主契约测试补充动态接口验证。
 
@@ -33,6 +33,7 @@ Blockbench 5.2.1，`e2ede0809ee6bc91f374ac7e00d34cffbdf86a14`。
 - `js/undo.js`：`create_undo_save`、`load_undo_save`、`init_edit`、`finish_edit`。
 - `js/texturing/textures.js`：纹理内嵌、原生绘画层与更新接口。
 - `js/preview/preview.ts`、`OrbitControls.js`：相机和混合 Pointer/Mouse 事件。
+- `js/io/model_loader.ts`：原生“新建”列表入口，创建结果仍使用 `Formats.free`；开始页双重调用在插件内合并，不修改宿主方法。
 
 ### 数据载体
 

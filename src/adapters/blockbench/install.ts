@@ -150,6 +150,32 @@ export function install(bb: HostRuntime) {
     await activate();
     app.select([id]);
   }
+  // The start screen invokes both onStart() and new() on ModelLoader entries.
+  // Coalesce those calls without changing the host's loader implementation.
+  let creatingProject: Promise<void> | null = null;
+  function startProject() {
+    if (!creatingProject) {
+      creatingProject = newProject()
+        .catch((error) => bb.Blockbench.showQuickMessage(`MCUI: ${String(error)}`, 6000))
+        .finally(() => {
+          creatingProject = null;
+        });
+    }
+    return creatingProject;
+  }
+  life.add(
+    new bb.ModelLoader('mcui_studio', {
+      name: 'MC UI',
+      icon: 'dashboard_customize',
+      category: 'general',
+      plugin: 'mcui_studio',
+      description: 'Minecraft 像素 UI 工作台：创建 320×180 画板，启用二维顶视图与图层编辑。',
+      format_page: { button_text: '创建 MC UI 项目' },
+      onStart: () => {
+        void startProject();
+      },
+    }),
+  );
   function copy() {
     if (!current) return;
     const doc = clone(current.state.doc),
@@ -432,7 +458,7 @@ export function install(bb: HostRuntime) {
   );
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.1.0',
+    version: '0.1.1',
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,

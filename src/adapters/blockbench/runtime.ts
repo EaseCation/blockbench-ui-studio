@@ -6,6 +6,7 @@ export interface HostRuntime {
   Blockbench: HostObject;
   Project: HostObject;
   ModelProject: HostObject;
+  ModelLoader: HostObject;
   Cube: HostObject;
   Group: HostObject;
   Texture: HostObject;
@@ -50,6 +51,7 @@ export function capabilities(bb: HostRuntime): string[] {
     'Panel',
     'Tool',
     'SharedActions',
+    'ModelLoader',
   ] as const)
     if (!bb[name]) missing.push(name);
   // Undo is a project-dependent getter and is intentionally undefined on the welcome screen.
