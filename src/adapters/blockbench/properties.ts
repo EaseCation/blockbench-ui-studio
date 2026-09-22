@@ -1,6 +1,6 @@
 import type { Studio } from '../../application/studio';
 import type { Id, UiDocument, UiNode } from '../../domain/types';
-import { defaultFrame } from '../../domain/types';
+import { defaultAppearance, defaultFrame } from '../../domain/types';
 import { topSelection } from '../../domain/document';
 import { formatSize, parseSize, formatOffset, parseOffset } from '../../domain/expression';
 import { FIELD_PREFIX, SOURCE_MARKER } from './native-fields';
@@ -123,11 +123,81 @@ const all: Field[] = [
     },
   })),
   {
+    id: 'image_resolution',
+    label: '贴图尺寸',
+    type: 'select',
+    options: { preserve: '保留分辨率', follow: '跟随图层尺寸' },
+    applies: (n) => !!n.content && n.content.kind !== 'nine-slice',
+    read: (n) => (n.rasterSize ? 'preserve' : 'follow'),
+    write: (n, v) => {
+      if (v === 'preserve') n.rasterSize ??= { width: n.rect.width, height: n.rect.height };
+      else delete n.rasterSize;
+    },
+    description:
+      '保留模式固定贴图、UV 和 UV 尺寸，改变 W/H 只改变显示大小，非等比修改会拉伸；等比缩放可在较小 UI 内显示高清素材。导入图片默认保留。跟随模式按 UI 尺寸重新生成像素。九宫格始终按目标尺寸生成。Shift 拖动八点框会启用保留模式。',
+  },
+  {
+    id: 'style_fill',
+    label: '背景填充',
+    type: 'select',
+    options: { none: '无', solid: '纯色', linear: '线性渐变' },
+    applies: (n) => n.kind === 'layer',
+    read: (n) => n.appearance?.fill ?? 'none',
+    write: (n, v) => {
+      (n.appearance ??= defaultAppearance()).fill = v;
+    },
+    description: '填充位于图片或绘画内容下方。渐变使用起止两种颜色；最终结果保存为标准贴图。',
+  },
+  ...(['color', 'endColor', 'strokeColor'] as const).map(
+    (key, i): Field => ({
+      id: 'style_' + key,
+      label: ['填充颜色', '渐变终点', '描边颜色'][i]!,
+      type: 'color',
+      applies: (n) =>
+        n.kind === 'layer' &&
+        (key === 'strokeColor' ||
+          (key === 'endColor'
+            ? n.appearance?.fill === 'linear'
+            : !!n.appearance && n.appearance.fill !== 'none')),
+      read: (n) => (n.appearance ?? defaultAppearance())[key],
+      write: (n, v) => {
+        (n.appearance ??= defaultAppearance())[key] = typeof v === 'string' ? v : v.toHex8String();
+      },
+      description: '使用原生颜色选择器设置颜色与透明度。描边在内容上方、图层边界内侧绘制。',
+    }),
+  ),
+  {
+    id: 'style_angle',
+    label: '渐变角度',
+    type: 'number',
+    propertyType: 'number',
+    applies: (n) => n.appearance?.fill === 'linear',
+    read: (n) => n.appearance?.angle ?? 90,
+    write: (n, v) => {
+      (n.appearance ??= defaultAppearance()).angle = v;
+    },
+    description: '角度单位为度：0 从左到右，90 从上到下。',
+  },
+  {
+    id: 'style_stroke',
+    label: '描边粗细',
+    type: 'number',
+    propertyType: 'number',
+    min: 0,
+    applies: (n) => n.kind === 'layer',
+    read: (n) => n.appearance?.strokeWidth ?? 0,
+    write: (n, v) => {
+      (n.appearance ??= defaultAppearance()).strokeWidth = v;
+    },
+    description:
+      '向内描边，单位为贴图像素；0 关闭。保留分辨率时，描边随贴图整体缩放。可通过“栅格化为绘画图层”烘焙为可绘制像素。',
+  },
+  {
     id: 'paint_resize',
     label: 'UI 尺寸变化',
     type: 'select',
-    options: { extend: '扩展画布（保持像素）', scale: '缩放内容' },
-    applies: (n) => n.content?.kind === 'paint',
+    options: { extend: '扩展画布（保持像素）', scale: '重采样像素（改变贴图尺寸）' },
+    applies: (n) => n.content?.kind === 'paint' && !n.rasterSize,
     read: (n) => n.content?.mode,
     write: (n, v) => {
       if (n.content?.kind === 'paint') n.content.mode = v;
@@ -291,7 +361,7 @@ const explanations: Record<string, string> = {
   anchorFrom: '选择父级上的参照点。UI 位置偏移相对此点计算。',
   anchorTo: '选择自身对齐到父锚点的点。例如父锚点和自身锚点都为中心时居中。',
   paint_resize:
-    '扩展画布保持原有像素大小并增加透明空间；缩小保留源像素。缩放内容会将源画面缩放到新尺寸。',
+    '扩展画布保持原有像素大小并增加透明空间；缩小保留源像素。重采样像素会将源画面缩放到新尺寸。如只改变显示大小，请选择保留贴图分辨率。',
   image_mode:
     'Fit 完整显示并留透明边；Fill 等比铺满并裁切；Stretch 拉伸；Crop 使用倍率与偏移；原始像素不缩放。',
   image_anchor: '图片在可用空间中的对齐点；Fill 时也决定裁切方向。',
@@ -311,7 +381,7 @@ for (const field of all) field.description = explanations[field.id] ?? field.des
 type Section = 'element' | 'layout' | 'content';
 function section(field: Field): Section {
   if (['status', 'offset', 'size', 'selection_info'].includes(field.id)) return 'element';
-  return /^(paint_|image_|nine_|only_downscale)/.test(field.id) ? 'content' : 'layout';
+  return /^(paint_|image_|nine_|style_|only_downscale)/.test(field.id) ? 'content' : 'layout';
 }
 /** Declarative native fields; draft text is the only custom input behavior. */
 export class PropertyBridge {
@@ -379,6 +449,18 @@ export class PropertyBridge {
         step: 1,
         condition: () =>
           applicable() && this.targets().every((n) => !field.applies || field.applies(n)),
+      };
+    if (kind === 'content')
+      config.mcui_rasterize = {
+        type: 'buttons',
+        label: '像素编辑',
+        buttons: ['一键栅格化'],
+        description: '将当前填充、渐变、描边与图片合成为可绘制像素，保留显示和贴图尺寸。可撤销。',
+        condition: () => this.targets().length === 1 && this.targets()[0]?.kind === 'layer',
+        click: () => {
+          const n = this.targets()[0];
+          if (n) this.current()?.flatten(n.id);
+        },
       };
     const panel = new this.bb.Panel('mcui_' + kind, {
       name,

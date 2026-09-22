@@ -739,3 +739,242 @@ test('内容预览使用原生对话框，取消不修改参数', async ({ page 
   await page.evaluate(() => (window as any).Dialog.open.cancel());
   expect(await page.evaluate(() => window.Undo.history.length)).toBe(before);
 });
+
+test('选择图层自动同步顶面 UV 与贴图，不需进入绘画', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+  });
+  const result = await page.evaluate(() => {
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('layer', root),
+      b = app.add('layer', root);
+    app.update(a, (n: any) => {
+      n.layout.width = { kind: 'fixed', value: 48 };
+    });
+    app.select([a]);
+    const uv = (window as any).UVEditor;
+    return {
+      selected: window.Texture.selected.uuid,
+      expected: app.state.doc.bindings[a].textureId,
+      uv: uv.vue.texture?.uuid,
+      size: [uv.vue.texture?.uv_width, uv.vue.texture?.uv_height],
+      faces: uv.getSelectedFaces(
+        window.Cube.all.find((c: any) => c.uuid === app.state.doc.bindings[a].elementId),
+      ),
+      mode: window.Modes.selected.id,
+      count: window.Texture.all.length,
+    };
+  });
+  expect(result.selected).toBe(result.expected);
+  expect(result.uv).toBe(result.expected);
+  expect(result.size).toEqual([48, 32]);
+  expect(result.faces).toEqual(['up']);
+  expect(result.mode).toBe('edit');
+  expect(result.count).toBe(2);
+});
+
+test('高清图片缩小只改变几何，UV和纹理不变且支持撤销', async ({ page, context }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+  });
+  const result = await page.evaluate(async () => {
+    const app = window.Blockbench.mcuiStudio.getStudio();
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#f00';
+    ctx.fillRect(0, 0, 128, 64);
+    await app.paste({ png: canvas.toDataURL(), width: 128, height: 64, name: '高清图' });
+    const id = app.state.selection[0],
+      cube = window.Cube.all[0],
+      texture = window.Texture.all[0];
+    const before = {
+      png: texture.getDataURL(),
+      uv: [...cube.faces.up.uv],
+      size: [texture.width, texture.height, texture.uv_width, texture.uv_height],
+    };
+    app.update(id, (n: any) => {
+      n.layout.width = { kind: 'fixed', value: 32 };
+      n.layout.height = { kind: 'fixed', value: 16 };
+    });
+    const after = {
+      png: texture.getDataURL(),
+      uv: [...cube.faces.up.uv],
+      size: [texture.width, texture.height, texture.uv_width, texture.uv_height],
+    };
+    const geometry = [cube.size(0), cube.size(2)];
+    const model = JSON.parse(
+      JSON.stringify(window.Codecs.project.compile({ raw: true, bitmaps: true })),
+    );
+    window.Undo.undo();
+    return { model, before, after, geometry, undone: [cube.size(0), cube.size(2)] };
+  });
+  expect(result.after).toEqual(result.before);
+  expect(result.after.size).toEqual([128, 64, 128, 64]);
+  expect(result.geometry).toEqual([32, 16]);
+  expect(result.undone).toEqual([128, 64]);
+  const bare = await context.newPage();
+  await start(bare, false);
+  const loaded = await bare.evaluate(async (model) => {
+    window.setupProject(window.Formats.free);
+    window.Codecs.project.parse(model);
+    await Promise.all(window.Texture.all.map((t: any) => t.img.decode()));
+    return {
+      uv: window.Cube.all[0].faces.up.uv,
+      size: [window.Texture.all[0].width, window.Texture.all[0].height],
+      geometry: [window.Cube.all[0].size(0), window.Cube.all[0].size(2)],
+    };
+  }, result.model);
+  expect(loaded).toEqual({ uv: result.before.uv, size: [128, 64], geometry: [32, 16] });
+  await bare.close();
+});
+
+test('原生内容表单设置渐变描边并一键栅格化，Undo恢复规则', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    window.BarItems.mcui_add_layer.trigger();
+  });
+  await page.locator('.panel_handle[panel_id="mcui_content"]').click();
+  await page.evaluate(() => {
+    const form = (window as any).Interface.Panels.mcui_content.form;
+    form.setValues({
+      mcui_style_fill: 'linear',
+      mcui_style_color: '#ff0000ff',
+      mcui_style_endColor: '#0000ffff',
+      mcui_style_angle: 0,
+      mcui_style_stroke: 2,
+      mcui_style_strokeColor: '#00ff00ff',
+    });
+    form.dispatchEvent('input', {
+      result: form.getResult(),
+      changed_keys: [
+        'mcui_style_fill',
+        'mcui_style_color',
+        'mcui_style_endColor',
+        'mcui_style_angle',
+        'mcui_style_stroke',
+        'mcui_style_strokeColor',
+      ],
+    });
+  });
+  const before = await page.evaluate(() => window.Texture.all[0].getDataURL());
+  await page.getByRole('button', { name: '一键栅格化', exact: true }).click();
+  const after = await page.evaluate(() => {
+    const app = window.Blockbench.mcuiStudio.getStudio();
+    return {
+      appearance: app.state.doc.nodes[app.state.selection[0]].appearance ?? null,
+      png: window.Texture.all[0].getDataURL(),
+      pixel: Array.from(window.Texture.all[0].ctx.getImageData(0, 0, 1, 1).data),
+    };
+  });
+  expect(after.appearance).toBeNull();
+  expect(after.png).toBe(before);
+  expect(after.pixel).toEqual([0, 255, 0, 255]);
+  await page.evaluate(() => window.Undo.undo());
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const app = window.Blockbench.mcuiStudio.getStudio();
+        return app.state.doc.nodes[app.state.selection[0]].appearance?.fill;
+      }),
+    )
+    .toBe('linear');
+  await page.screenshot({ path: '.cache/mcui-style.png' });
+});
+
+test('顶视图隐藏原生辅助并淡入全局像素网格，透视与卸载恢复', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+    window.BarItems.mcui_add_layer.trigger();
+  });
+  const result = await page.evaluate(() => {
+    const api = window.Blockbench.mcuiStudio,
+      viewport = api.getViewport(),
+      p = window.Preview.selected;
+    viewport.setView('2d');
+    p.camera.zoom = (12 * (p.camera.right - p.camera.left)) / p.width;
+    p.camera.updateProjectionMatrix();
+    p.controls.update();
+    viewport.draw();
+    const grid = (window as any).three_grid;
+    const lines = grid.children.filter((o: any) => o.isLine || o.isLineSegments);
+    return {
+      hidden: lines.every((o: any) => !p.camera.layers.test(o.layers)),
+      count: lines.length,
+    };
+  });
+  expect(result.count).toBeGreaterThan(0);
+  expect(result.hidden).toBe(true);
+  await expect(page.locator('[data-mcui-grid]').first()).not.toHaveAttribute('d', '');
+  await page.screenshot({ path: '.cache/mcui-pixel-grid.png' });
+  const restored = await page.evaluate(() => {
+    window.Blockbench.mcuiStudio.getViewport().setView('3d');
+    const grid = (window as any).three_grid;
+    return grid.children
+      .filter((o: any) => o.name.startsWith('axis_line'))
+      .every((o: any) => o.layers.mask === 1);
+  });
+  expect(restored).toBe(true);
+  await expect(page.locator('[data-mcui-grid]')).toHaveCount(0);
+  const cleanup = await page.evaluate(() => {
+    window.Blockbench.mcuiStudio.getViewport().setView('2d');
+    window.Plugins.registered.mcui_studio.onunload();
+    return {
+      masks: (window as any).three_grid.children
+        .filter((o: any) => o.name.startsWith('axis_line'))
+        .map((o: any) => o.layers.mask),
+      gizmo: window.Preview.selected.orbit_gizmo.node.style.display,
+    };
+  });
+  expect(cleanup.masks.every((mask: number) => mask === 1)).toBe(true);
+  expect(cleanup.gizmo).not.toBe('none');
+});
+
+test('直接绘制有外观的成品会保护像素，显式栅格化后可继续绘画', async ({ page }) => {
+  await start(page);
+  await page.evaluate(async () => {
+    await window.Blockbench.mcuiStudio.newProject();
+  });
+  const result = await page.evaluate(() => {
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      id = app.add('layer');
+    app.update(id, (n: any) => {
+      n.appearance = {
+        fill: 'solid',
+        color: '#ff000080',
+        endColor: '#000000ff',
+        angle: 0,
+        strokeColor: '#00ff00ff',
+        strokeWidth: 0,
+      };
+    });
+    const tex = window.Texture.all[0];
+    window.Undo.initEdit({ textures: [tex], bitmap: true });
+    tex.ctx.clearRect(0, 0, 1, 1);
+    tex.ctx.fillStyle = '#0000ff';
+    tex.ctx.fillRect(0, 0, 1, 1);
+    tex.updateChangesAfterEdit();
+    window.Undo.finishEdit('Paint styled texture');
+    const suspended = app.state.doc.nodes[id].suspended;
+    const painted = Array.from(tex.ctx.getImageData(0, 0, 1, 1).data);
+    app.flatten(id);
+    return {
+      suspended,
+      painted,
+      flattened: Array.from(tex.ctx.getImageData(0, 0, 1, 1).data),
+      appearance: app.state.doc.nodes[id].appearance ?? null,
+      active: !app.state.doc.nodes[id].suspended,
+    };
+  });
+  expect(result.suspended).toContain('手工修改');
+  expect(result.painted).toEqual([0, 0, 255, 255]);
+  expect(result.flattened).toEqual(result.painted);
+  expect(result.appearance).toBeNull();
+  expect(result.active).toBe(true);
+});

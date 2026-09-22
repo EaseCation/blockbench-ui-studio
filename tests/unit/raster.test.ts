@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { blank, renderPixels, mergePaint } from '../../src/domain/raster';
+import { blank, decorate, renderPixels, mergePaint } from '../../src/domain/raster';
 import type { ImageRecipe, Pixels } from '../../src/domain/types';
 const rgb = (p: Pixels, x: number, y: number) =>
   Array.from(p.data.slice((y * p.width + x) * 4, (y * p.width + x) * 4 + 4));
@@ -99,5 +99,33 @@ describe('像素内容生成', () => {
   it('透明度保持 RGB 与 alpha 独立', () => {
     const out = renderPixels(source(), recipe('stretch'), 3, 3, 0.5);
     expect(rgb(out, 1, 1)).toEqual([50, 50, 100, 128]);
+  });
+});
+
+describe('背景和描边', () => {
+  const style = {
+    fill: 'linear' as const,
+    color: '#ff0000ff',
+    endColor: '#0000ffff',
+    angle: 0,
+    strokeColor: '#00ff00ff',
+    strokeWidth: 0,
+  };
+  it('线性渐变两端颜色精确，描边向内且不改尺寸', () => {
+    const gradient = decorate(blank(5, 3), style);
+    expect(rgb(gradient, 0, 1)).toEqual([255, 0, 0, 255]);
+    expect(rgb(gradient, 4, 1)).toEqual([0, 0, 255, 255]);
+    const stroked = decorate(blank(5, 3), { ...style, strokeWidth: 1 });
+    expect(rgb(stroked, 0, 1)).toEqual([0, 255, 0, 255]);
+    expect(rgb(stroked, 2, 1)).toEqual([128, 0, 128, 255]);
+    expect([stroked.width, stroked.height]).toEqual([5, 3]);
+  });
+  it('源像素在填充之上，透明度只合成一次', () => {
+    const src = blank(2, 2);
+    src.data.set([0, 0, 255, 128]);
+    const out = decorate(src, { ...style, fill: 'solid' }, 0.5);
+    expect(rgb(out, 0, 0)).toEqual([127, 0, 128, 128]);
+    expect(rgb(src, 0, 0)).toEqual([0, 0, 255, 128]);
+    expect(() => decorate(src, { ...style, strokeWidth: -1 })).toThrow();
   });
 });

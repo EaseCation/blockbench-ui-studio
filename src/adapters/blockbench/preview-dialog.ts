@@ -1,7 +1,7 @@
 import type { Studio } from '../../application/studio';
 import type { Id, RenderRecipe } from '../../domain/types';
 import { clone } from '../../domain/document';
-import { renderPixels } from '../../domain/raster';
+import { decorate, renderPixels } from '../../domain/raster';
 import { imagePort } from '../../platform/browser/images';
 import type { HostRuntime } from './runtime';
 
@@ -73,7 +73,12 @@ export async function showContentPreview(bb: HostRuntime, app: Studio, id: Id) {
     ctx.clearRect(0, 0, 480, 240);
     ctx.imageSmoothingEnabled = false;
     try {
-      const result = renderPixels(pixels, candidate(values), node.rect.width, node.rect.height);
+      const size = node.rasterSize ?? node.rect;
+      const result = decorate(
+        renderPixels(pixels, candidate(values), size.width, size.height),
+        node.appearance,
+        node.opacity,
+      );
       const tile = document.createElement('canvas');
       tile.width = result.width;
       tile.height = result.height;
@@ -81,13 +86,13 @@ export async function showContentPreview(bb: HostRuntime, app: Studio, id: Id) {
         data = t.createImageData(result.width, result.height);
       data.data.set(result.data);
       t.putImageData(data, 0, 0);
-      const scale = Math.min(440 / result.width, 190 / result.height);
+      const scale = Math.min(440 / node.rect.width, 190 / node.rect.height);
       ctx.drawImage(
         tile,
-        (480 - result.width * scale) / 2,
+        (480 - node.rect.width * scale) / 2,
         15,
-        result.width * scale,
-        result.height * scale,
+        node.rect.width * scale,
+        node.rect.height * scale,
       );
       ctx.fillStyle = '#ddd';
       ctx.font = '13px sans-serif';

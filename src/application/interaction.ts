@@ -87,7 +87,7 @@ export class InteractionMachine {
         minWidth,
         minHeight,
       );
-      this.studio.transformSelection(this.original, target);
+      this.studio.transformSelection(this.original, target, p.shift);
     }
   }
 

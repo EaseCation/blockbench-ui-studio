@@ -18,6 +18,9 @@ export interface HostRuntime {
   Undo: HostObject;
   Preview: HostObject;
   THREE: HostObject;
+  three_grid: HostObject;
+  scene: HostObject;
+  UVEditor: HostObject;
   Modes: HostObject;
   Codecs: HostObject;
   Formats: HostObject;

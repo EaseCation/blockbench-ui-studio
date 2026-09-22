@@ -1,4 +1,4 @@
-import type { Pixels, RenderRecipe } from './types';
+import type { Appearance, Pixels, RenderRecipe } from './types';
 export const blank = (width: number, height: number): Pixels => {
   if (
     !Number.isSafeInteger(width) ||
@@ -146,4 +146,68 @@ export function mergePaint(
     visible.height,
   );
   return { pixels: out, origin: { x: origin.x - x, y: origin.y - y } };
+}
+
+export const hasAppearance = (style?: Appearance): boolean =>
+  !!style && (style.fill !== 'none' || style.strokeWidth > 0);
+
+/** Fill behind the source and an inside stroke above it; standard RGBA output. */
+export function decorate(src: Pixels, style?: Appearance, opacity = 1): Pixels {
+  const out = { ...src, data: src.data.slice() };
+  const color = (hex: string) => {
+    if (!/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(hex))
+      throw new Error('颜色必须为 #RRGGBB 或 #RRGGBBAA');
+    return [0, 1, 2, 3].map((i) =>
+      i === 3 && hex.length === 7 ? 255 : parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16),
+    );
+  };
+  const over = (bottom: number[], top: number[]) => {
+    const a = top[3]! / 255,
+      b = bottom[3]! / 255,
+      alpha = a + b * (1 - a);
+    return [0, 1, 2]
+      .map((i) => (alpha ? (top[i]! * a + bottom[i]! * b * (1 - a)) / alpha : 0))
+      .concat(alpha * 255);
+  };
+  if (style) {
+    if (
+      !Number.isFinite(style.angle) ||
+      !Number.isSafeInteger(style.strokeWidth) ||
+      style.strokeWidth < 0
+    )
+      throw new Error('描边宽度必须是非负整数，渐变角度必须是有限数值');
+    const start = color(style.color),
+      end = color(style.endColor),
+      stroke = color(style.strokeColor);
+    const a = (style.angle * Math.PI) / 180,
+      dx = Math.cos(a),
+      dy = Math.sin(a);
+    const span =
+      Math.abs(dx) * Math.max(0, src.width - 1) + Math.abs(dy) * Math.max(0, src.height - 1);
+    for (let y = 0; y < src.height; y++)
+      for (let x = 0; x < src.width; x++) {
+        const i = (y * src.width + x) * 4;
+        const t = span
+          ? Math.max(
+              0,
+              Math.min(
+                1,
+                0.5 + ((x - (src.width - 1) / 2) * dx + (y - (src.height - 1) / 2) * dy) / span,
+              ),
+            )
+          : 0;
+        let rgba = Array.from(src.data.subarray(i, i + 4));
+        if (style.fill !== 'none')
+          rgba = over(
+            start.map((v, k) => (style.fill === 'linear' ? v + (end[k]! - v) * t : v)),
+            rgba,
+          );
+        if (Math.min(x, y, src.width - 1 - x, src.height - 1 - y) < style.strokeWidth)
+          rgba = over(rgba, stroke);
+        out.data.set(rgba, i);
+      }
+  }
+  for (let i = 3; i < out.data.length; i += 4)
+    out.data[i] = Math.round(out.data[i]! * Math.max(0, Math.min(1, opacity)));
+  return out;
 }

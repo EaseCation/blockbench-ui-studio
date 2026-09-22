@@ -161,3 +161,47 @@ describe('百分比位置拖动', () => {
     expect(app.state.doc.nodes[id]!.layout.offset.x).toBe(2);
   });
 });
+
+describe('独立纹理分辨率与外观', () => {
+  it('等比手势保持像素与渲染缓存，改回跟随才重采样', () => {
+    const { app, host } = fixture(),
+      id = app.add('layer');
+    app.select([id]);
+    const before = host.bitmaps[id],
+      count = host.renders;
+    const original = { ...app.state.doc.nodes[id]!.rect };
+    app.beginGesture('缩放');
+    app.transformSelection(original, { ...original, width: 16, height: 16 }, true);
+    app.endGesture(true);
+    expect(app.state.doc.nodes[id]!.rect.width).toBe(16);
+    expect(host.renders).toBe(count);
+    expect(host.bitmaps[id]).toBe(before);
+    app.update(id, (n) => {
+      delete n.rasterSize;
+    });
+    expect(host.bitmaps[id]!.width).toBe(16);
+  });
+  it('栅格化保留填充描边且不重复叠加，后续缩放保持分辨率', () => {
+    const { app, host } = fixture(),
+      id = app.add('layer');
+    app.update(id, (n) => {
+      n.opacity = 0.5;
+      n.appearance = {
+        fill: 'solid',
+        color: '#ff0000ff',
+        endColor: '#000000ff',
+        angle: 0,
+        strokeColor: '#00ff00ff',
+        strokeWidth: 2,
+      };
+    });
+    const data = Array.from(host.bitmaps[id]!.data);
+    app.flatten(id);
+    expect(app.state.doc.nodes[id]!.appearance).toBeUndefined();
+    expect(Array.from(host.bitmaps[id]!.data)).toEqual(data);
+    app.update(id, (n) => {
+      n.layout.width = { kind: 'fixed', value: 8 };
+    });
+    expect(host.bitmaps[id]!.width).toBe(32);
+  });
+});

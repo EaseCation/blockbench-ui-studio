@@ -272,7 +272,7 @@ export function install(bb: HostRuntime) {
     ),
     command(
       'mcui_flatten',
-      'UI：转为绘画图层',
+      'UI：一键栅格化为绘画图层',
       'image',
       () => withLayer((app, id) => app.flatten(id)),
       selectedLayer,
@@ -371,7 +371,7 @@ export function install(bb: HostRuntime) {
       },
     }),
     new bb.Action('mcui_toggle_paint_resize', {
-      name: 'UI：切换扩展画布／缩放内容',
+      name: 'UI：切换扩展画布／保留分辨率缩放',
       icon: 'aspect_ratio',
       condition: () => !!current && bb.Modes.edit && !focused(),
       keybind: new bb.Keybind({ key: 'k' }),
@@ -379,8 +379,12 @@ export function install(bb: HostRuntime) {
         current?.execute('切换贴图缩放策略', (doc) => {
           for (const id of current!.state.selection) {
             const n = doc.nodes[id];
-            if (n?.content?.kind === 'paint')
-              n.content.mode = n.content.mode === 'extend' ? 'scale' : 'extend';
+            if (n?.content?.kind === 'paint') {
+              if (n.rasterSize) {
+                delete n.rasterSize;
+                n.content.mode = 'extend';
+              } else n.rasterSize = { width: n.rect.width, height: n.rect.height };
+            }
           }
         }),
     }),
@@ -562,6 +566,7 @@ export function install(bb: HostRuntime) {
           .filter(([, b]) => selected.has(b.elementId))
           .map(([id]) => id),
       );
+      entry.host.syncSelectedTexture(entry.app.state.doc, entry.app.state.selection);
       properties.refresh();
     }),
   );
@@ -626,7 +631,7 @@ export function install(bb: HostRuntime) {
   );
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.2.0',
+    version: '0.3.0',
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,

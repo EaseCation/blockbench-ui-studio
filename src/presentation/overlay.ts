@@ -6,6 +6,7 @@ export interface OverlayModel {
   selection: Rect | null;
   marquee: Rect | null;
   measurements: Measurement[];
+  grid?: { x: number; y: number; spacing: number; opacity: number } | null;
 }
 const NS = 'http://www.w3.org/2000/svg';
 const positions: Record<Handle, [number, number]> = {
@@ -36,6 +37,25 @@ export function drawOverlay(root: HTMLElement, model: OverlayModel) {
   const set = (e: Element, attrs: Record<string, string | number>) => {
     for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
   };
+  let grid = svg.querySelector('[data-mcui-grid]');
+  if (!grid) {
+    grid = element('path', {
+      'data-mcui-grid': '',
+      fill: 'none',
+      stroke: '#ffffff',
+      'stroke-width': 1,
+    });
+    svg.prepend(grid);
+  }
+  const g = model.grid;
+  const paths: string[] = [];
+  if (g && g.spacing >= 8) {
+    for (let x = ((g.x % g.spacing) + g.spacing) % g.spacing; x < model.width; x += g.spacing)
+      paths.push(`M${x} 0V${model.height}`);
+    for (let y = ((g.y % g.spacing) + g.spacing) % g.spacing; y < model.height; y += g.spacing)
+      paths.push(`M0 ${y}H${model.width}`);
+  }
+  set(grid, { d: paths.join(' '), opacity: g?.opacity ?? 0 });
   const r = model.selection;
   if (r) {
     let border = svg.querySelector('[data-mcui-selection]');

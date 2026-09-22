@@ -4,7 +4,7 @@ import type { Id, Pixels, ResolvedScene, UiDocument } from '../../domain/types';
 import type { HostObject, HostRuntime } from './runtime';
 import { hashString } from './runtime';
 import { imagePort } from '../../platform/browser/images';
-import { renderPixels } from '../../domain/raster';
+import { hasAppearance, renderPixels } from '../../domain/raster';
 import { SOURCE_MARKER } from './native-fields';
 export const METADATA_KEY = 'mcui_studio';
 interface Carrier {
@@ -244,10 +244,11 @@ export class NativeHost implements HostPort {
     if (content?.kind !== 'paint') return false;
     if (!this.sourceLayers.has(content.source) && texture.layers_enabled)
       this.retainPaintLayers(content.source, texture.uuid, content.origin);
+    if (hasAppearance(doc.nodes[id]?.appearance)) return false;
     const layers = this.sourceLayers.get(content.source);
     if (!layers?.length) return false;
     const source = doc.assets[content.source]!,
-      rect = doc.nodes[id]!.rect;
+      rect = doc.nodes[id]!.rasterSize ?? doc.nodes[id]!.rect;
     const sx = content.mode === 'scale' ? rect.width / source.width : 1,
       sy = content.mode === 'scale' ? rect.height / source.height : 1;
     const old = texture.layers ?? [],
@@ -429,10 +430,38 @@ export class NativeHost implements HostPort {
     for (const [id, snap] of Object.entries(this.snapshots(doc)))
       if (doc.bindings[id]) doc.bindings[id]!.fingerprint = snap.fingerprint;
   }
+  private syncingTexture = false;
+  private textureSelectionKey = '';
+  syncSelectedTexture(doc: UiDocument, ids: Id[]) {
+    if (!this.active() || this.syncingTexture) return;
+    const id = ids.find((id) => doc.nodes[id]?.kind === 'layer');
+    const binding = id ? doc.bindings[id] : undefined;
+    const key = binding ? `${binding.elementId}:${binding.textureId}` : '';
+    if (key === this.textureSelectionKey) return;
+    this.textureSelectionKey = key;
+    if (!binding?.textureId) return;
+    const texture = this.texture(binding.textureId),
+      element = this.element(binding.elementId);
+    if (!texture || !element) return;
+    this.syncingTexture = true;
+    try {
+      const uv = this.bb.UVEditor;
+      const faces = uv.getSelectedFaces(element, true);
+      faces.splice(0, faces.length, 'up');
+      texture.select();
+      uv.loadData();
+      uv.vue.updateTexture();
+    } finally {
+      this.syncingTexture = false;
+    }
+  }
   select(doc: UiDocument, ids: Id[]) {
     if (!this.active()) return;
     const selected = topSelection(doc, this.scene(doc).selection);
-    if (JSON.stringify([...selected].sort()) === JSON.stringify([...ids].sort())) return;
+    if (JSON.stringify([...selected].sort()) === JSON.stringify([...ids].sort())) {
+      this.syncSelectedTexture(doc, ids);
+      return;
+    }
     this.bb.Undo.initSelection();
     this.bb.unselectAllElements();
     for (const id of ids) {
@@ -443,6 +472,7 @@ export class NativeHost implements HostPort {
     }
     this.bb.updateSelection();
     this.bb.Undo.finishSelection('Select UI elements');
+    this.syncSelectedTexture(doc, ids);
   }
   beginPaint(doc: UiDocument, id: Id, onSource: (png: string) => Promise<void>) {
     const node = doc.nodes[id],

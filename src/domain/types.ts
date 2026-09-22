@@ -57,6 +57,22 @@ export interface PaintRecipe {
   origin: Point;
 }
 export type RenderRecipe = ImageRecipe | NineSliceRecipe | PaintRecipe;
+export interface Appearance {
+  fill: 'none' | 'solid' | 'linear';
+  color: string;
+  endColor: string;
+  angle: number;
+  strokeColor: string;
+  strokeWidth: number;
+}
+export const defaultAppearance = (): Appearance => ({
+  fill: 'none',
+  color: '#ffffffff',
+  endColor: '#000000ff',
+  angle: 90,
+  strokeColor: '#000000ff',
+  strokeWidth: 0,
+});
 export interface UiNode {
   id: Id;
   name: string;
@@ -71,6 +87,11 @@ export interface UiNode {
   frame?: FrameSpec;
   content?: RenderRecipe;
   originalContent?: RenderRecipe;
+  appearance?: Appearance;
+  originalAppearance?: Appearance;
+  originalOpacity?: number;
+  originalRasterSize?: { width: number; height: number };
+  rasterSize?: { width: number; height: number };
   suspended?: string;
 }
 export interface SourceAsset {

@@ -1,3 +1,4 @@
+import { UiGrid } from './ui-grid';
 import type { Studio } from '../../application/studio';
 import { InteractionMachine } from '../../application/interaction';
 import { bounds, distances } from '../../domain/geometry';
@@ -23,6 +24,7 @@ export interface ViewMemory {
 }
 export class ViewportController {
   private disposables = new Disposables();
+  private grid: UiGrid;
   private previews = new Map<
     HostObject,
     { root: HTMLElement; cleanup: Disposables; last: string }
@@ -42,6 +44,7 @@ export class ViewportController {
     readonly studio: Studio,
     private memory: ViewMemory = { views: {} },
   ) {
+    this.grid = new UiGrid(bb);
     this.originalCamera = this.capture();
     this.originalTool = bb.Toolbox.selected;
     this.projectId = bb.Project.uuid;
@@ -460,20 +463,28 @@ export class ViewportController {
   draw() {
     if (this.bb.Project?.uuid !== this.projectId) return;
     this.memory.views[this.currentView] = this.capture();
+    this.grid.update(this.studio.state.view === '2d');
     for (const [p, entry] of this.previews) {
-      if (!this.active() || !p.isOrtho || p.angle !== 'top') {
+      if (this.studio.state.view !== '2d' || !p.isOrtho || p.angle !== 'top') {
         if (entry.last) {
           clearOverlay(entry.root);
           entry.last = '';
         }
         continue;
       }
-      const selection = this.studio.getSelectionBounds();
+      const selection = this.active() ? this.studio.getSelectionBounds() : null;
       const ms =
         selection && this.alt && this.hover && !this.studio.state.selection.includes(this.hover)
           ? distances(selection, this.studio.state.scene.nodes[this.hover]!.rect)
           : [];
+      const origin = this.screen({ x: 0, y: 0 }, p),
+        unit = this.screen({ x: 1, y: 1 }, p);
+      const spacing = Math.abs(unit.x - origin.x);
       const model = {
+        grid:
+          spacing >= 8
+            ? { x: origin.x, y: origin.y, spacing, opacity: Math.min(0.16, (spacing - 8) / 100) }
+            : null,
         width: p.width,
         height: p.height,
         selection: selection ? this.screenRect(selection, p) : null,
@@ -504,5 +515,6 @@ export class ViewportController {
       this.restore(this.originalCamera);
     }
     this.disposables.dispose();
+    this.grid.restore();
   }
 }

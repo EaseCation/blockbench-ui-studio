@@ -7,7 +7,7 @@ import {
   validateDocument,
 } from '../domain/document';
 import { layout } from '../domain/layout';
-import { blank, mergePaint, renderPixels } from '../domain/raster';
+import { blank, decorate, hasAppearance, mergePaint, renderPixels } from '../domain/raster';
 import { bounds, mapRect } from '../domain/geometry';
 import { resizeRule } from '../domain/expression';
 import { createDocument, createNode, defaultFrame, fixed } from '../domain/types';
@@ -115,14 +115,20 @@ export class Studio {
       n.rect = { ...r };
       if (!n.content || n.suspended) continue;
       const asset = doc.assets[n.content.source]!;
-      const key = JSON.stringify([n.content, asset.revision, r.width, r.height, n.opacity]);
+      const size = n.rasterSize ?? r;
+      const key = JSON.stringify([
+        n.content,
+        asset.revision,
+        size.width,
+        size.height,
+        n.opacity,
+        n.appearance,
+      ]);
       keys.set(id, key);
       if (this.renderKeys.get(id) !== key)
-        bitmaps[id] = renderPixels(
-          this.source(doc, asset.id),
-          n.content,
-          r.width,
-          r.height,
+        bitmaps[id] = decorate(
+          renderPixels(this.source(doc, asset.id), n.content, size.width, size.height),
+          n.appearance,
           n.opacity,
         );
     }
@@ -394,6 +400,7 @@ export class Studio {
       if (
         n.content?.kind === 'paint' &&
         n.content.mode === 'extend' &&
+        !n.rasterSize &&
         (old.width !== r.width || old.height !== r.height)
       ) {
         n.content.origin.x += Math.round(r.x - old.x);
@@ -419,13 +426,17 @@ export class Studio {
       n.rect = { ...r };
     }
   }
-  transformSelection(original: Rect, target: Rect) {
+  transformSelection(original: Rect, target: Rect, preserveResolution = false) {
     const ids = this.state.selection;
     this.previewGesture((doc) => {
       const rects: Record<Id, Rect> = {};
       for (const id of ids) {
         const n = doc.nodes[id];
-        if (n) rects[id] = mapRect(n.rect, original, target);
+        if (n) {
+          if (preserveResolution && n.content && n.content.kind !== 'nine-slice' && !n.rasterSize)
+            n.rasterSize = { width: n.rect.width, height: n.rect.height };
+          rects[id] = mapRect(n.rect, original, target);
+        }
       }
       this.changeRects(doc, rects);
     });
@@ -481,6 +492,13 @@ export class Studio {
         (parent ? doc.nodes[parent]!.children : doc.roots).push(id);
         doc.nodes[id] = n;
       }
+      const density = existing
+        ? Math.max(1, image.width / n.rect.width, image.height / n.rect.height)
+        : 1;
+      n.rasterSize = existing
+        ? { width: Math.round(n.rect.width * density), height: Math.round(n.rect.height * density) }
+        : { width: image.width, height: image.height };
+      delete n.appearance;
       n.content = {
         kind: 'image',
         source: this.putSource(doc, pixels),
@@ -521,6 +539,7 @@ export class Studio {
       id,
       (n) => {
         if (!n.content) return;
+        delete n.rasterSize;
         const a = this.state.doc.assets[n.content.source]!;
         const border = Math.max(0, Math.floor(Math.min(a.width, a.height) / 4));
         n.content = {
@@ -540,7 +559,13 @@ export class Studio {
       const texture = doc.bindings[id]?.textureId,
         pixels = texture ? this.host.pixels(texture) : null;
       if (!pixels) throw new Error('找不到当前贴图');
-      if (n.content.kind !== 'paint') n.originalContent = clone(n.content);
+      n.originalContent = clone(n.content);
+      n.originalAppearance = n.appearance ? clone(n.appearance) : undefined;
+      n.originalOpacity = n.opacity;
+      n.originalRasterSize = n.rasterSize ? { ...n.rasterSize } : undefined;
+      delete n.appearance;
+      n.opacity = 1;
+      n.rasterSize = { width: pixels.width, height: pixels.height };
       n.content = {
         kind: 'paint',
         source: this.putSource(doc, pixels),
@@ -557,6 +582,12 @@ export class Studio {
         if (n.originalContent) {
           n.content = clone(n.originalContent);
           delete n.originalContent;
+          n.appearance = n.originalAppearance;
+          delete n.originalAppearance;
+          n.opacity = n.originalOpacity ?? n.opacity;
+          n.rasterSize = n.originalRasterSize;
+          delete n.originalOpacity;
+          delete n.originalRasterSize;
           delete n.suspended;
         }
       },
@@ -596,6 +627,7 @@ export class Studio {
     });
   }
   paint(id: Id) {
+    if (hasAppearance(this.state.doc.nodes[id]?.appearance)) this.flatten(id);
     const n = this.state.doc.nodes[id];
     if (!n?.content) return;
     this.host.beginPaint(this.state.doc, id, async (png) => {
@@ -704,7 +736,7 @@ export class Studio {
         before.pixelFingerprint !== snap.pixelFingerprint
       ) {
         const pixels = this.host.pixels(snap.textureId);
-        if (pixels && n.content.kind === 'paint') {
+        if (pixels && n.content.kind === 'paint' && !hasAppearance(n.appearance)) {
           const merged =
             n.content.mode === 'extend'
               ? mergePaint(this.source(doc, n.content.source), pixels, n.content.origin)
