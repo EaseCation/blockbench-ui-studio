@@ -1,0 +1,30 @@
+{
+  "name": "blockbench-mcui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A portable pixel UI authoring workbench for Blockbench",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.core.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:host": "playwright test",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "format": "prettier --write src tests scripts docs '*.json' '*.ts' README.md",
+    "format:check": "prettier --check src tests scripts docs '*.json' '*.ts' README.md",
+    "check": "npm run check:boundaries && npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "@types/node": "22.15.30",
+    "esbuild": "0.25.5",
+    "prettier": "3.5.3",
+    "typescript": "5.8.3",
+    "vitest": "4.1.11"
+  }
+}

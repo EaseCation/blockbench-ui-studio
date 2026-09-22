@@ -1,0 +1,152 @@
+.mcui-workbench {
+  font:
+    12px/1.5 system-ui,
+    sans-serif;
+  color: var(--color-text, #dedee3);
+  padding: 8px;
+  min-width: 210px;
+  min-height: 0;
+  flex: 1 1 0;
+  overflow: auto;
+  box-sizing: border-box;
+}
+.mcui-workbench * {
+  box-sizing: border-box;
+}
+.mcui-workbench button,
+.mcui-workbench select,
+.mcui-workbench input {
+  font: inherit;
+  color: inherit;
+  min-width: 0;
+  border: 1px solid var(--color-border, #4c4e59);
+  border-radius: 4px;
+  background: var(--color-back, #282a32);
+  padding: 4px 6px;
+  height: auto;
+  max-width: 100%;
+}
+.mcui-workbench button {
+  cursor: pointer;
+}
+.mcui-workbench button:hover {
+  border-color: #57a6ff;
+}
+.mcui-workbench button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.mcui-workbench input[type='checkbox'] {
+  width: auto;
+}
+.mcui-toolbar,
+.mcui-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 5px 0;
+}
+.mcui-toolbar > select {
+  flex: 1;
+}
+.mcui-tabs > button {
+  flex: 1;
+}
+.mcui-tabs .active {
+  background: #245b94;
+}
+.mcui-layer-list {
+  min-height: 100px;
+  max-height: 330px;
+  overflow: auto;
+}
+.mcui-layer {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 29px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.mcui-layer.selected {
+  background: #285486;
+}
+.mcui-layer:hover {
+  outline: 1px solid #57a6ff66;
+}
+.mcui-layer-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcui-layer button {
+  border: 0;
+  background: transparent;
+  padding: 2px;
+}
+.mcui-kind {
+  opacity: 0.6;
+}
+.mcui-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 5px 0;
+}
+.mcui-field > span {
+  min-width: 48px;
+  color: var(--color-subtle_text, #aaa);
+}
+.mcui-field > input,
+.mcui-field > select {
+  flex: 1;
+  width: 100%;
+}
+.mcui-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 8px;
+}
+.mcui-grid .mcui-field {
+  display: block;
+}
+.mcui-grid .mcui-field > span {
+  display: block;
+}
+.mcui-hint {
+  font-size: 11px;
+  opacity: 0.65;
+  margin: 8px 0;
+}
+.mcui-error {
+  color: #ff8d8d;
+}
+.mcui-warning {
+  border-left: 3px solid #edaf4c;
+  background: #edaf4c12;
+  padding: 7px;
+}
+.mcui-workbench hr {
+  border: 0;
+  border-top: 1px solid #6665;
+  margin: 10px 0;
+}
+.mcui-source-preview {
+  position: relative;
+  width: 120px;
+  margin: 12px auto;
+  background: repeating-conic-gradient(#7773 0% 25%, transparent 0% 50%) 50%/12px 12px;
+}
+.mcui-source-preview img {
+  display: block;
+  width: 100%;
+  image-rendering: pixelated;
+}
+.mcui-source-preview svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
