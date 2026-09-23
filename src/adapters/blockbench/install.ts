@@ -19,7 +19,7 @@ export function install(bb: HostRuntime) {
   const missing = capabilities(bb);
   if (missing.length) {
     bb.Blockbench.showMessageBox({
-      title: 'MC UI Studio',
+      title: 'UI Studio',
       message: `当前版本缺少接口：${missing.join(', ')}。原生项目仍可使用。`,
     });
     return () => {};
@@ -124,7 +124,7 @@ export function install(bb: HostRuntime) {
   async function newProject() {
     if (!bb.newProject(bb.Formats.free)) return;
     const project = bb.Project;
-    project.name = 'MC UI';
+    project.name = 'UI 设计';
     const host = new NativeHost(bb, project),
       app = Studio.fresh(host, imagePort);
     host.onSourceSession = sourceSession;
@@ -167,12 +167,12 @@ export function install(bb: HostRuntime) {
   }
   life.add(
     new bb.ModelLoader('mcui_studio', {
-      name: 'MC UI',
+      name: 'UI 设计',
       icon: 'dashboard_customize',
       category: 'general',
       plugin: 'mcui_studio',
-      description: 'Minecraft 像素 UI 工作台：创建 320×180 画板，启用二维顶视图与图层编辑。',
-      format_page: { button_text: '创建 MC UI 项目' },
+      description: '二维 UI 设计工作台，支持图层编辑、像素绘制、图片适配、九宫格和自动布局。',
+      format_page: { button_text: '创建 UI 项目' },
       onStart: () => {
         void startProject();
       },
@@ -432,7 +432,7 @@ export function install(bb: HostRuntime) {
       () => !!sourceEdit && sourceEdit.projectId === bb.Project?.uuid && !sourceEdit.busy,
     ),
     new bb.Action('mcui_new_project', {
-      name: '新建 MC UI 项目',
+      name: '新建 UI 项目',
       icon: 'dashboard_customize',
       click: () => {
         void newProject();

@@ -413,10 +413,10 @@ for (const method of ['button', 'double-click'] as const) {
     await start(page);
     const entry = page.locator('.format_entry[format="mcui_studio"]');
     await expect(entry).toBeVisible();
-    await expect(entry).toContainText('MC UI');
+    await expect(entry).toContainText('UI 设计');
     if (method === 'button') {
       await entry.click();
-      await page.getByRole('button', { name: /创建 MC UI 项目/ }).click();
+      await page.getByRole('button', { name: /创建 UI 项目/ }).click();
     } else {
       await entry.dblclick();
     }
