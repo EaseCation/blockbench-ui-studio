@@ -18,10 +18,19 @@ export class WorkspaceLayout {
   private updating = false;
   private disposed = false;
   private sidebars?: { left: boolean; right: boolean };
+  private inspector?: { container: HTMLElement; height: string; priority: string };
   constructor(
     private bb: HostRuntime,
     private current: () => Studio | null,
   ) {
+    const style = document.createElement('style');
+    style.textContent = `
+      #right_bar > .mcui-fill-inspector:not(.folded){flex:1 1 0;min-height:90px;height:auto!important;overflow:hidden}
+      #right_bar > .mcui-fill-inspector > .panel{flex:1 1 0;min-height:0;height:0;overflow-y:auto;overflow-x:hidden}
+      #right_bar > .mcui-fill-inspector > .panel > .form{flex-shrink:0}
+    `;
+    document.head.append(style);
+    this.life.add(() => style.remove());
     this.life.add(bb.Blockbench.on('render_frame', () => this.update()));
     this.life.add(bb.Blockbench.on('select_mode', () => this.update()));
     // Restore edit-mode data while that mode still owns position_data.
@@ -65,6 +74,15 @@ export class WorkspaceLayout {
       outliner.customizePosition({ sidebar_index: leftIndex - 1, fixed_height: false });
       outliner.fold(false);
       if (propertyHost !== outliner) propertyHost.moveTo('right_bar');
+      if (propertyHost !== outliner) {
+        const container = propertyHost.container as HTMLElement;
+        this.inspector = {
+          container,
+          height: container.style.getPropertyValue('--main-panel-height'),
+          priority: container.style.getPropertyPriority('--main-panel-height'),
+        };
+        container.classList.add('mcui-fill-inspector');
+      }
       for (const id of ['uv', 'textures']) {
         const host = panels[id]?.getContainerPanel();
         if (host && host !== outliner && host !== propertyHost) host.fold(true);
@@ -89,6 +107,13 @@ export class WorkspaceLayout {
     this.updating = true;
     this.owner = null;
     try {
+      if (this.inspector) {
+        const { container, height, priority } = this.inspector;
+        container.classList.remove('mcui-fill-inspector');
+        if (height) container.style.setProperty('--main-panel-height', height, priority);
+        else container.style.removeProperty('--main-panel-height');
+        this.inspector = undefined;
+      }
       const panels = this.bb.Interface.Panels;
       const currentMode = this.bb.Interface.getUIMode();
       for (const { panel, data, before, previousSlot, changed, slotChanged } of this.saved) {

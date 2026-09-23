@@ -167,3 +167,42 @@ test('保留已有原生布局和手动折叠状态，仅临时改变 Figma 工�
     }),
   ).toEqual(before);
 });
+
+test('属性标签撑满右栏、随窗口调整且长表单内部滚动', async ({ page }) => {
+  await start(page);
+  await page.evaluate(() => window.BarItems.mcui_add_layer.trigger());
+  const bounds = () =>
+    page.evaluate(() => {
+      const bar = document.querySelector('#right_bar')!.getBoundingClientRect();
+      const host = document
+        .querySelector('#right_bar > .mcui-fill-inspector')!
+        .getBoundingClientRect();
+      return { available: bar.height, height: host.height, bottom: bar.bottom - host.bottom };
+    });
+  const heights: number[] = [];
+  for (const id of ['element', 'mcui_layout', 'mcui_content']) {
+    await page.locator(`.panel_handle[panel_id=${id}]`).click();
+    const box = await bounds();
+    expect(box.height).toBeGreaterThan(box.available - 3);
+    expect(Math.abs(box.bottom)).toBeLessThan(3);
+    heights.push(box.height);
+  }
+  expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(2);
+  await page.setViewportSize({ width: 1280, height: 650 });
+  await page.getByRole('button', { name: '添加填充', exact: true }).click();
+  await page.getByLabel('填充类型', { exact: true }).selectOption('linear');
+  await page.getByRole('button', { name: '添加描边', exact: true }).click();
+  const content = page.locator('#panel_mcui_content');
+  expect(await content.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  await page
+    .getByRole('button', { name: '合成为可绘制像素', exact: true })
+    .scrollIntoViewIfNeeded();
+  await expect(
+    page.getByRole('button', { name: '合成为可绘制像素', exact: true }),
+  ).toBeInViewport();
+  expect((await bounds()).height).toBeLessThan(heights[0]!);
+  await page.screenshot({ path: '.cache/mcui-inspector-full-height.png' });
+  await page.evaluate(() => window.Blockbench.mcuiStudio.getViewport().setInteraction('native'));
+  await expect(page.locator('.mcui-fill-inspector')).toHaveCount(0);
+  await expect(page.locator('#right_bar > [panel_id=outliner]')).toBeVisible();
+});
