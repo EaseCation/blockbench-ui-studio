@@ -5,16 +5,34 @@ import { decorate, renderPixels } from '../../domain/raster';
 import { imagePort } from '../../platform/browser/images';
 import type { HostRuntime } from './runtime';
 
-export async function showContentPreview(bb: HostRuntime, app: Studio, id: Id) {
+export async function showContentPreview(
+  bb: HostRuntime,
+  app: Studio,
+  id: Id,
+  active = () => true,
+) {
+  const project = bb.Project,
+    initial = app.state.doc;
+  const valid = () => active() && bb.Project === project;
   const node = app.state.doc.nodes[id];
   if (!node?.content) return;
   const source = app.state.doc.assets[node.content.source]!;
   const pixels = await imagePort.decode(source.png),
     recipe = clone(node.content);
+  if (!valid()) return;
+  const snapshot = JSON.stringify(node);
+  const master = document.createElement('canvas');
+  master.width = pixels.width;
+  master.height = pixels.height;
+  const masterCtx = master.getContext('2d')!;
+  const masterImage = masterCtx.createImageData(pixels.width, pixels.height);
+  masterImage.data.set(pixels.data);
+  masterCtx.putImageData(masterImage, 0, 0);
   const canvas = document.createElement('canvas');
   canvas.width = 480;
   canvas.height = 240;
-  canvas.style.cssText = 'width:100%;height:240px;image-rendering:pixelated;background:#222';
+  canvas.style.cssText =
+    'width:100%;height:240px;image-rendering:pixelated;background:var(--color-back)';
   const form: Record<string, unknown> =
     recipe.kind === 'nine-slice'
       ? {
@@ -48,12 +66,19 @@ export async function showContentPreview(bb: HostRuntime, app: Studio, id: Id) {
                 original: '原始像素',
               },
             },
-            scale: { label: '倍率', type: 'number', value: recipe.scale, min: 0.01 },
+            scale: {
+              label: '倍率',
+              type: 'number',
+              value: recipe.scale,
+              min: 0.01,
+              condition: (v: any) => v.mode === 'crop',
+            },
             offset: {
               label: '偏移',
               type: 'vector',
               dimensions: 2,
               value: [recipe.offset.x, recipe.offset.y],
+              condition: (v: any) => v.mode === 'crop',
             },
           }
         : {};
@@ -86,15 +111,45 @@ export async function showContentPreview(bb: HostRuntime, app: Studio, id: Id) {
         data = t.createImageData(result.width, result.height);
       data.data.set(result.data);
       t.putImageData(data, 0, 0);
-      const scale = Math.min(440 / node.rect.width, 190 / node.rect.height);
+      const nine = recipe.kind === 'nine-slice';
+      const scale = Math.min((nine ? 265 : 440) / node.rect.width, 175 / node.rect.height);
+      const textColor =
+        getComputedStyle(document.body).getPropertyValue('--color-text').trim() || '#ddd';
+      const accent =
+        getComputedStyle(document.body).getPropertyValue('--color-accent').trim() || '#4897ff';
+      if (nine) {
+        const zoom = Math.min(140 / pixels.width, 165 / pixels.height);
+        const x = 12 + (140 - pixels.width * zoom) / 2,
+          y = 28;
+        ctx.drawImage(master, x, y, pixels.width * zoom, pixels.height * zoom);
+        const [top, right, bottom, left] = values.insets;
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        for (const xx of [left, pixels.width - right]) {
+          ctx.moveTo(x + xx * zoom, y);
+          ctx.lineTo(x + xx * zoom, y + pixels.height * zoom);
+        }
+        for (const yy of [top, pixels.height - bottom]) {
+          ctx.moveTo(x, y + yy * zoom);
+          ctx.lineTo(x + pixels.width * zoom, y + yy * zoom);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = textColor;
+        ctx.font = '13px sans-serif';
+        ctx.fillText(`源图 ${pixels.width}×${pixels.height}`, 12, 16);
+        ctx.fillText('生成结果', 180, 16);
+      }
       ctx.drawImage(
         tile,
-        (480 - node.rect.width * scale) / 2,
-        15,
+        nine ? 175 + (285 - node.rect.width * scale) / 2 : (480 - node.rect.width * scale) / 2,
+        28,
         node.rect.width * scale,
         node.rect.height * scale,
       );
-      ctx.fillStyle = '#ddd';
+      ctx.fillStyle = textColor;
       ctx.font = '13px sans-serif';
       ctx.fillText(`${result.width} × ${result.height}px · 确认后应用`, 12, 228);
     } catch (error) {
@@ -111,6 +166,14 @@ export async function showContentPreview(bb: HostRuntime, app: Studio, id: Id) {
     lines: [canvas],
     onFormChange: paint,
     onConfirm(values: any) {
+      if (
+        !valid() ||
+        app.state.doc.id !== initial.id ||
+        JSON.stringify(app.state.doc.nodes[id]) !== snapshot
+      ) {
+        bb.Blockbench.showQuickMessage('项目或目标内容已改变，请重新打开预览', 4000);
+        return false;
+      }
       return app.execute('修改 UI 内容参数', (doc) => {
         doc.nodes[id]!.content = candidate(values);
       });
@@ -118,4 +181,8 @@ export async function showContentPreview(bb: HostRuntime, app: Studio, id: Id) {
   });
   dialog.show();
   paint(dialog.getFormResult());
+  return () => {
+    if (bb.Dialog.open === dialog) dialog.cancel();
+    dialog.delete();
+  };
 }

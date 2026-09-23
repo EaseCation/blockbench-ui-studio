@@ -287,8 +287,7 @@ export function install(bb: HostRuntime) {
       () => {
         if (current?.wrapAutoLayout()) {
           properties.refresh();
-          const panel = bb.Interface.Panels.mcui_layout;
-          (panel.getHostPanel?.() ?? panel).selectTab(panel);
+          properties.showLayout();
         }
       },
       () => !!current && bb.Modes.edit && properties.targets().length > 0,
@@ -329,7 +328,14 @@ export function install(bb: HostRuntime) {
       'crop',
       () =>
         withLayer((app, id) => {
-          void showContentPreview(bb, app, id);
+          const generation = token;
+          void showContentPreview(bb, app, id, () => token === generation && current === app)
+            .then((dispose) => {
+              if (!dispose) return;
+              if (token !== generation) dispose();
+              else life.add(dispose);
+            })
+            .catch((error) => app.report(error));
         }),
       selectedLayer,
     ),
@@ -542,6 +548,7 @@ export function install(bb: HostRuntime) {
   const commandActive = () =>
     !!current &&
     !focused() &&
+    !bb.open_interface &&
     bb.Modes.edit &&
     ['preview', 'outliner', 'element', 'transform'].includes(bb.Prop.active_panel);
   life.add(
@@ -717,7 +724,7 @@ export function install(bb: HostRuntime) {
   );
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.6.1',
+    version: '0.7.0',
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,

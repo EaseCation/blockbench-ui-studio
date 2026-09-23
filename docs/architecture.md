@@ -1,4 +1,4 @@
-# v0.6 架构与 Blockbench 适配
+# v0.7 架构与 Blockbench 适配
 
 ## 依赖边界
 
@@ -60,3 +60,13 @@ ViewportController 统一取消移动与绘制草稿、释放指针捕获。绘�
 内容 Cube 的 from.y 与 to.y 均为解析后的 depth，Y 尺寸为 0，层级由不同的 Y 高度表达；只有 up 面绑定贴图。原生异常检测接受零厚度并保护独立增加的厚度，几何校验结果不能因像素／布局指纹未变化而跳过。
 
 Blockbench 5.2.1 的 Cube 预览控制器会给零尺寸轴内部增加 0.001，以便生成渲染几何。该行为不修改 Cube 数据或保存内容；插件不覆盖宿主几何生成。
+
+## v0.7 原生属性面板组合
+
+PropertyBridge 只负责原生 Property 代理、选择映射、元素页双轴输入与保存剥离。property-fields 保存共享的字段读写规则；InspectorPanels 将它们组合成原生 Panel/InputForm 中注册的全宽 FormElement，InspectorControls 管理草稿输入、九点控件与原生 ColorPicker 生命周期。没有移动宿主其它表单的 DOM、修改宿主原型或引入独立工作台。
+
+application/inspector 提供不依赖 DOM 的混合值、摘要、适用上下文与复合属性修改。水平/垂直内边距和锚点预设明确控制修改范围；普通字段仍调用原有写入规则与 Studio.validateChange/execute。无效规则不会先写入模型。
+
+界面状态（偏好的原生标签、展开的分组）合并保存到本机 mcui_preferences.inspector，不进入文档、schema 或 Undo。输入记录项目及选区 key，切换后废弃旧草稿。取消颜色编辑与卸载清理选择器；Spectrum 的输入过程只更新本地颜色，最终关闭后核对原值及选区再一次提交。样式、九宫格与贴图分辨率继续写标准纹理。
+
+已有内容预览对话框新增源图切线，对比生成结果；Crop 参数按模式显示。确认前参数只存在对话框，确认时校验项目、目标快照，再执行一次事务；卸载清理打开的对话框。

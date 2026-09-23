@@ -294,6 +294,7 @@ export class ViewportController {
       this.bb.Modes.edit &&
       !this.studio.state.busy &&
       !this.bb.Dialog.open &&
+      !this.bb.open_interface &&
       !this.bb.open_menu
     );
   }
@@ -757,6 +758,7 @@ export class ViewportController {
     if (
       typing(e.target) ||
       this.bb.Dialog.open ||
+      this.bb.open_interface ||
       this.bb.open_menu ||
       !this.navigationActive() ||
       (!this.drawingActive() &&

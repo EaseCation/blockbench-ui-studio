@@ -855,30 +855,18 @@ test('原生内容表单设置渐变描边并一键栅格化，Undo恢复规则'
     window.BarItems.mcui_add_layer.trigger();
   });
   await page.locator('.panel_handle[panel_id="mcui_content"]').click();
-  await page.evaluate(() => {
-    const form = (window as any).Interface.Panels.mcui_content.form;
-    form.setValues({
-      mcui_style_fill: 'linear',
-      mcui_style_color: '#ff0000ff',
-      mcui_style_endColor: '#0000ffff',
-      mcui_style_angle: 0,
-      mcui_style_stroke: 2,
-      mcui_style_strokeColor: '#00ff00ff',
-    });
-    form.dispatchEvent('input', {
-      result: form.getResult(),
-      changed_keys: [
-        'mcui_style_fill',
-        'mcui_style_color',
-        'mcui_style_endColor',
-        'mcui_style_angle',
-        'mcui_style_stroke',
-        'mcui_style_strokeColor',
-      ],
-    });
-  });
+  await page.getByRole('button', { name: '添加填充', exact: true }).click();
+  await page.getByLabel('填充类型', { exact: true }).selectOption('linear');
+  await page.getByLabel('渐变角度', { exact: true }).fill('0');
+  await page.getByLabel('渐变角度', { exact: true }).press('Enter');
+  await page.getByRole('button', { name: '添加描边', exact: true }).click();
+  await page.getByLabel('描边粗细', { exact: true }).fill('2');
+  await page.getByLabel('描边粗细', { exact: true }).press('Enter');
+  await page.locator('.mcui-inspector-color[aria-label^="描边颜色"] .sp-replacer').click();
+  await page.locator('.sp-container:visible .sp-input').fill('#00ff00');
+  await page.locator('.sp-container:visible .sp-choose').click();
   const before = await page.evaluate(() => window.Texture.all[0].getDataURL());
-  await page.getByRole('button', { name: '一键栅格化', exact: true }).click();
+  await page.getByRole('button', { name: '合成为可绘制像素', exact: true }).click();
   const after = await page.evaluate(() => {
     const app = window.Blockbench.mcuiStudio.getStudio();
     return {
@@ -1022,7 +1010,7 @@ test('图形化自动布局：方向、九点对齐、两端分布及边距联�
     app.select([root]);
   });
   await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
-  await page.locator('#panel_mcui_layout .form_bar_mcui_direction li[key="row"]').click();
+  await page.locator('#panel_mcui_layout button[data-flow="row"]').click();
   await page.getByRole('button', { name: '子项对齐：上右', exact: true }).click();
   const frame = () =>
     page.evaluate(() => {
@@ -1030,10 +1018,12 @@ test('图形化自动布局：方向、九点对齐、两端分布及边距联�
       return app.state.doc.nodes[app.state.selection[0]].frame;
     });
   expect(await frame()).toMatchObject({ direction: 'row', justify: 'end', align: 'start' });
-  await page.locator('#panel_mcui_layout .form_bar_mcui_direction li[key="column"]').click();
+  await page.locator('#panel_mcui_layout button[data-flow="column"]').click();
   await page.getByRole('button', { name: '子项对齐：上右', exact: true }).click();
   expect(await frame()).toMatchObject({ direction: 'column', justify: 'start', align: 'end' });
-  await page.getByRole('button', { name: '两端分布', exact: true }).click();
+  await page.getByLabel('间距方式', { exact: true }).selectOption('auto');
+  await page.getByRole('button', { name: '四边', exact: true }).click();
+  await page.getByRole('button', { name: '联动四边内边距' }).click();
   expect(await frame()).toMatchObject({ justify: 'space-between', align: 'end' });
   const top = page.getByRole('spinbutton', { name: '上内边距' });
   await top.fill('6');
@@ -1070,6 +1060,7 @@ test('多选边距只改一边；尺寸快捷规则、锚点和约束折叠', as
     app.select([a, b]);
   });
   await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
+  await page.getByRole('button', { name: '四边', exact: true }).click();
   const left = page.getByRole('spinbutton', { name: '左内边距' });
   await left.fill('10');
   await left.press('Enter');
@@ -1087,18 +1078,19 @@ test('多选边距只改一边；尺寸快捷规则、锚点和约束折叠', as
     app.select([app.state.selection[0]]);
   });
   await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
-  await page.locator('#panel_mcui_layout .form_bar_mcui_sizing_width li[key="fill"]').click();
+  await page.getByLabel('宽度模式', { exact: true }).selectOption('fill');
   expect(
     await page.evaluate(() => {
       const app = window.Blockbench.mcuiStudio.getStudio();
       return app.state.doc.nodes[app.state.selection[0]].layout.width.kind;
     }),
   ).toBe('fill');
+  await page.locator('#panel_mcui_layout details[data-disclosure=anchors] summary').click();
   await page.getByRole('button', { name: '父锚点：中中', exact: true }).click();
   await page.getByRole('button', { name: '自身锚点：中中', exact: true }).click();
-  await expect(page.locator('#panel_mcui_layout .form_bar_mcui_maxWidth')).toBeHidden();
-  await page.locator('#panel_mcui_layout .form_bar_mcui_advanced_layout input').check();
-  await expect(page.locator('#panel_mcui_layout .form_bar_mcui_maxWidth')).toBeVisible();
+  await expect(page.getByLabel('最大宽度', { exact: true })).toBeHidden();
+  await page.locator('#panel_mcui_layout details[data-disclosure=limits] summary').click();
+  await expect(page.getByLabel('最大宽度', { exact: true })).toBeVisible();
 });
 
 test('一键组成自动布局并打开布局标签，撤销恢复层级，卸载注销图形控件', async ({ page }) => {
@@ -1131,8 +1123,10 @@ test('一键组成自动布局并打开布局标签，撤销恢复层级，卸�
     }),
   ).toBe(2);
   await page.evaluate(() => window.Plugins.registered.mcui_studio.onunload());
-  expect(await page.evaluate(() => !!(window as any).FormElement.types.mcui_alignment)).toBe(false);
-  await expect(page.locator('.mcui-matrix')).toHaveCount(0);
+  expect(
+    await page.evaluate(() => !!(window as any).FormElement.types.mcui_inspector_section),
+  ).toBe(false);
+  await expect(page.locator('.mcui-inspector-matrix')).toHaveCount(0);
 });
 
 test('尺寸策略预检、键盘方向操作和切回自由布局保持位置', async ({ page }) => {
@@ -1147,9 +1141,9 @@ test('尺寸策略预检、键盘方向操作和切回自由布局保持位置',
   });
   await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
   await expect(
-    page.locator('#panel_mcui_layout .form_bar_mcui_sizing_width li[key="expression"]'),
-  ).toHaveAttribute('aria-disabled', 'true');
-  await page.locator('#panel_mcui_layout .form_bar_mcui_direction li[key="row"]').click();
+    page.locator('#panel_mcui_layout select[aria-label=宽度模式] option[value=expression]'),
+  ).toHaveAttribute('disabled', '');
+  await page.locator('#panel_mcui_layout button[data-flow="row"]').click();
   const middle = page.getByRole('button', { name: '子项对齐：中中', exact: true });
   await middle.focus();
   await middle.press('ArrowRight');
@@ -1163,7 +1157,7 @@ test('尺寸策略预检、键盘方向操作和切回自由布局保持位置',
   });
   expect(before.frame).toMatchObject({ justify: 'end', align: 'center' });
   expect(before.error).toBeNull();
-  await page.locator('#panel_mcui_layout .form_bar_mcui_direction li[key="free"]').click();
+  await page.locator('#panel_mcui_layout button[data-flow="free"]').click();
   expect(await page.evaluate(() => window.Cube.all.map((c: any) => [...c.from, ...c.to]))).toEqual(
     before.rects,
   );

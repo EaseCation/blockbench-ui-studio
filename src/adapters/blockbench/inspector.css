@@ -1,0 +1,181 @@
+.mcui-inspector {
+  width: auto;
+  box-sizing: border-box;
+  min-width: 0;
+  container-type: inline-size;
+  color: var(--color-text);
+  font-size: var(--font-size, 14px);
+}
+.mcui-inspector * {
+  box-sizing: border-box;
+}
+.mcui-inspector-section {
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 100%;
+  padding: 10px 5px;
+  border-bottom: 1px solid var(--color-border);
+}
+.mcui-inspector .mcui-inspector-heading {
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.mcui-inspector .mcui-inspector-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mcui-inspector .mcui-inspector-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+.mcui-inspector .mcui-inspector-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.mcui-inspector .mcui-inspector-cell > span {
+  flex: none;
+  color: var(--color-subtle_text);
+}
+.mcui-inspector .mcui-inspector-cell > input {
+  flex: 1;
+  width: 0;
+}
+.mcui-inspector .mcui-inspector-grow {
+  flex: 1;
+  min-width: 0;
+}
+.mcui-inspector .mcui-inspector-input,
+.mcui-inspector .mcui-inspector-select {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  margin: 0;
+  height: 28px;
+  border-radius: 4px;
+  background: var(--color-back);
+  border: 1px solid var(--color-border);
+  padding: 3px 5px;
+}
+.mcui-inspector .mcui-inspector-input[aria-invalid='true'] {
+  outline: 1px solid var(--color-error, #ef6870);
+}
+.mcui-inspector .mcui-inspector-button {
+  min-width: 0 !important;
+  margin: 0;
+  padding: 4px 7px;
+  border-radius: 4px;
+  white-space: normal;
+}
+.mcui-inspector .mcui-inspector-button[aria-pressed='true'] {
+  background: var(--color-accent);
+  color: var(--color-accent_text);
+}
+.mcui-inspector .mcui-inspector-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mcui-inspector .mcui-inspector-hint {
+  color: var(--color-subtle_text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.mcui-inspector .mcui-inspector-space {
+  margin-top: 8px;
+}
+.mcui-inspector details > summary {
+  display: list-item;
+  cursor: pointer;
+  color: var(--color-subtle_text);
+  padding: 5px 0;
+  overflow-wrap: anywhere;
+}
+.mcui-inspector details[open] > summary {
+  margin-bottom: 6px;
+}
+.mcui-inspector .mcui-inspector-segments {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+.mcui-inspector .mcui-inspector-segments > button {
+  flex: 1;
+}
+.mcui-inspector .mcui-inspector-alignment {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.mcui-inspector .mcui-inspector-matrix {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  max-width: 108px;
+}
+.mcui-inspector .mcui-inspector-matrix > button {
+  height: 27px;
+  padding: 0;
+}
+.mcui-inspector .mcui-inspector-stack {
+  display: grid;
+  gap: 6px;
+}
+.mcui-inspector .mcui-inspector-size-mode {
+  flex: none;
+  width: 56px;
+}
+.mcui-inspector .mcui-inspector-long {
+  grid-template-columns: minmax(0, 1fr);
+}
+.mcui-inspector .mcui-inspector-source {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: var(--color-back);
+  border: 1px solid var(--color-border);
+}
+.mcui-inspector .mcui-inspector-color {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.mcui-inspector .mcui-inspector-color .tool {
+  min-width: 32px;
+}
+.mcui-inspector .mcui-inspector-style-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.mcui-inspector [hidden] {
+  display: none !important;
+}
+.mcui-inspector .mcui-inspector-status:empty {
+  display: none;
+}
+.mcui-inspector .mcui-inspector-status {
+  padding: 6px;
+  color: var(--color-subtle_text);
+  overflow-wrap: anywhere;
+}
+.mcui-inspector:focus-within {
+  outline: none;
+}
+@container (max-width:300px) {
+  .mcui-inspector-style-row > .mcui-inspector-color .mcui-inspector-hint {
+    display: none;
+  }
+}
+
+.mcui-inspector .mcui-inspector-select {
+  appearance: auto;
+  background-image: none;
+}
