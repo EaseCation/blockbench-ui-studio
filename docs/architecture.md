@@ -138,3 +138,11 @@ NativeHost的像素哈希以实际PNG输入为依据，每个Texture只保留最
 Grouping适配器通过原生Action的use事件路由add_group/group_elements/resolve_group，不覆盖宿主原型。原生框选继续绘制和命中，mouseup捕获阶段补充完整包围的Frame，并在宿主记录selection_post前把逻辑Image映射回其Group。真正的载体独立编辑仍走差异保护。
 
 NativeHost.apply先安置存活节点，再递归删除旧容器，避免Frame删除误删要提升的子组。Scene回读对失去容器但仍存活的已知内容Cube保留逻辑ID及素材绑定，普通操作中重建容器；冷加载仍保留原生差异保护。编组后的选区在同一编辑事务内提交；历史恢复重新读取原生选区，避免已恢复的Frame处于逻辑未选中状态。
+
+## 层级框选（0.8.5）
+
+application/marquee只接收文档、投影矩形及修饰状态。起手所在容器提供初始作用域，普通框选越出边界后向外扩大范围，将命中子项提升为作用域直属分支；深选去除命中集合的祖先，结果不同时包含父子。Shift沿用相同归并策略，隐藏/锁定/暂停沿祖先链过滤。
+
+Viewport使用宿主startSelRect/moveSelRect/stopSelRect和原生选择历史。因Command/Ctrl加pointerdown会抑制兼容MouseEvent，手势开始后解除宿主本次注册的鼠标监听，由隔离的PointerEvent监听驱动现有辅助方法，不修改宿主原型。每次移动或修饰键变化同步最终逻辑选区及原生Group；松手只提交一条选择历史（若用户开启选择撤销）。
+
+临时状态保存原项目、Undo对象、初始选区和pointer ID；Escape/失焦/模式/工具/弹窗/pointercancel清理监听并恢复选区；项目已切走时用原项目whenNextOpen延迟恢复，避免操作新项目的Undo。节点、贴图和布局数据不因框选改变。

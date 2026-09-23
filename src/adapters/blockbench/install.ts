@@ -762,7 +762,7 @@ export function install(bb: HostRuntime) {
   life.add(() => contents.dispose());
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.8.4',
+    version: '0.8.5',
     contents: contents.api,
     newProject,
     getStudio: () => current,

@@ -1,4 +1,4 @@
-import { topSelection } from '../../domain/document';
+import { marqueeScope, selectMarquee } from '../../application/marquee';
 import { BindingIndex } from './binding-index';
 import { UiGrid } from './ui-grid';
 import {
@@ -51,8 +51,19 @@ export class ViewportController {
   private labelContext = document.createElement('canvas').getContext('2d');
   private alt = false;
   private pointerId: number | null = null;
-  private nativeMarquee: { preview: HostObject; docId: Id; old: Id[]; extend: boolean } | null =
-    null;
+  private nativeMarquee: {
+    preview: HostObject;
+    docId: Id;
+    old: Id[];
+    scope: Id | null;
+    deep: boolean;
+    extend: boolean;
+    cleanup: () => void;
+    click: Id | null;
+    undo: HostObject;
+    project: HostObject;
+    pointer: number;
+  } | null = null;
   private machine: InteractionMachine;
   private drawing = new DrawingMachine();
   private drawingTools: Partial<Record<DrawKind, HostObject>> = {};
@@ -145,8 +156,6 @@ export class ViewportController {
       }),
     );
     this.machine = new InteractionMachine(studio, { pan: (dx, dy) => this.pan(dx, dy) });
-    this.disposables.listen(document, 'mouseup', () => this.finishNativeMarquee(), true);
-    this.disposables.listen(document, 'touchend', () => this.finishNativeMarquee(), true);
     this.disposables.add(
       studio.subscribe(() => {
         if (this.drawing.request) this.updateDrawing();
@@ -323,7 +332,7 @@ export class ViewportController {
     return this.drawingContext() && !!this.drawingKind();
   }
   private cancelInput() {
-    this.nativeMarquee = null;
+    this.cancelNativeMarquee();
     this.machine?.cancel();
     this.drawing.cancel();
     this.drawingPreview = null;
@@ -496,71 +505,162 @@ export class ViewportController {
   private hit(event: MouseEvent, preview: HostObject): Id | null {
     return pickNode(this.pickNodes(preview), this.local(event, preview));
   }
+  private deepModifier(e: MouseEvent | KeyboardEvent) {
+    return this.bb.Blockbench.platform === 'darwin' || navigator.userAgent.includes('Mac OS')
+      ? e.metaKey
+      : e.ctrlKey;
+  }
   private canvasClick(data: HostObject) {
     if (!this.active()) return;
     const e = data.event as PointerEvent,
       p = this.bb.Preview.selected;
-    if (e.button !== 0 || this.space || e.ctrlKey || e.metaKey) return;
-    if (this.hit(e, p)) {
+    if (e.button !== 0 || this.space || this.nativeMarquee) return;
+    if (this.hit(e, p) && !this.deepModifier(e)) {
       this.pointerId = e.pointerId;
       p.node.setPointerCapture(e.pointerId);
       this.machine.down(this.input(e, p));
-    } else {
-      this.nativeMarquee = {
-        preview: p,
-        docId: this.studio.state.doc.id,
-        old: [...this.studio.state.selection],
-        extend: e.shiftKey,
-      };
-      if (!e.shiftKey) this.studio.select([]);
-      // Only the registered UI tool is toggled; the native marquee owns its DOM and history.
-      this.tool.selectElements = true;
-      try {
-        p.startSelRect(e);
-      } finally {
-        this.tool.selectElements = false;
-      }
-    }
+    } else this.startNativeMarquee(e, p);
   }
-  private finishNativeMarquee() {
+  private startNativeMarquee(e: PointerEvent, p: HostObject) {
+    if (this.nativeMarquee || this.bb.Dialog.open || this.bb.open_interface || this.bb.open_menu)
+      return;
+    const scope = marqueeScope(this.studio.state.doc, this.pickNodes(p), this.local(e, p));
+    const move = (event: PointerEvent) => {
+      if (event.pointerId !== e.pointerId) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      p.moveSelRect(event);
+      this.updateNativeMarquee(event);
+    };
+    const up = (event: PointerEvent) => {
+      if (event.pointerId !== e.pointerId) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      p.moveSelRect(event);
+      this.finishNativeMarquee(event);
+      if (p.selection.sr_move_f) p.stopSelRect(event);
+    };
+    this.nativeMarquee = {
+      preview: p,
+      pointer: e.pointerId,
+      undo: this.bb.Project.undo,
+      project: this.bb.Project,
+      docId: this.studio.state.doc.id,
+      old: [...this.studio.state.selection],
+      scope,
+      deep: this.deepModifier(e),
+      extend: e.shiftKey,
+      click: this.hit(e, p),
+      cleanup: () => {
+        document.removeEventListener('pointermove', move, true);
+        document.removeEventListener('pointerup', up, true);
+        if (p.node.hasPointerCapture(e.pointerId)) p.node.releasePointerCapture(e.pointerId);
+      },
+    };
+    // Own a fresh selection baseline; native edit transactions may leave an old one.
+    if (!this.bb.Undo.current_save) this.bb.Undo.cancelSelection(false);
+    // Keep the host's rectangle, activation threshold and selection Undo.
+    this.tool.selectElements = true;
+    try {
+      const canvas = p.canvas.getBoundingClientRect();
+      p.startSelRect({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        offsetX: e.clientX - canvas.left,
+        offsetY: e.clientY - canvas.top,
+        pointerType: e.pointerType,
+        shiftKey: e.shiftKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+      });
+    } finally {
+      this.tool.selectElements = false;
+    }
+    // Cmd/Ctrl navigation can suppress compatibility mouse events. Feed PointerEvents
+    // into the registered native gesture helpers, without replacing host methods.
+    for (const type of ['mousemove', 'touchmove'])
+      document.removeEventListener(type, p.selection.sr_move_f);
+    for (const type of ['mouseup', 'touchend'])
+      document.removeEventListener(type, p.selection.sr_stop_f);
+    document.addEventListener('pointermove', move, true);
+    document.addEventListener('pointerup', up, true);
+    p.node.setPointerCapture(e.pointerId);
+  }
+  private updateNativeMarquee(e?: MouseEvent | KeyboardEvent) {
     const gesture = this.nativeMarquee;
-    this.nativeMarquee = null;
+    if (!gesture) return;
+    if (e) {
+      gesture.deep = this.deepModifier(e);
+      gesture.extend = e.shiftKey;
+    }
     if (
-      !gesture ||
       !this.active() ||
       gesture.docId !== this.studio.state.doc.id ||
-      !gesture.preview.selection.activated
-    )
+      this.bb.Dialog.open ||
+      this.bb.open_interface ||
+      this.bb.open_menu
+    ) {
+      this.cancelNativeMarquee();
       return;
-    const doc = this.studio.state.doc,
-      scene = this.studio.state.scene;
-    const box = gesture.preview.selection.box.getBoundingClientRect();
-    const node = gesture.preview.node.getBoundingClientRect();
-    const rect = {
-      x: box.left - node.left,
-      y: box.top - node.top,
-      width: box.width,
-      height: box.height,
-    };
-    const ids = [...(gesture.extend ? gesture.old : []), ...this.studio.host.selection(doc)].filter(
-      (id) => scene.nodes[id]?.visible && !scene.nodes[id]?.locked,
-    );
-    for (const n of this.pickNodes(gesture.preview)) {
-      const r = n.rect;
-      if (
-        n.kind === 'frame' &&
-        !n.disabled &&
-        r.x >= rect.x - 0.01 &&
-        r.y >= rect.y - 0.01 &&
-        r.x + r.width <= rect.x + rect.width + 0.01 &&
-        r.y + r.height <= rect.y + rect.height + 0.01
-      )
-        ids.push(n.id);
     }
-    const selected = topSelection(doc, [...new Set(ids)]);
+    if (!gesture.preview.selection.activated) return;
+    const box = gesture.preview.selection.box.getBoundingClientRect(),
+      node = gesture.preview.node.getBoundingClientRect();
+    const selected = selectMarquee(
+      this.studio.state.doc,
+      this.pickNodes(gesture.preview),
+      { x: box.left - node.left, y: box.top - node.top, width: box.width, height: box.height },
+      gesture.scope,
+      gesture.deep,
+      gesture.extend ? gesture.old : [],
+    );
     this.studio.reflectSelection(selected);
-    // Runs before the native mouseup handler captures its final selection history.
-    this.studio.host.select(doc, selected, false);
+    this.studio.host.select(this.studio.state.doc, selected, false);
+  }
+  private finishNativeMarquee(e?: MouseEvent) {
+    const gesture = this.nativeMarquee;
+    if (!gesture) return;
+    this.updateNativeMarquee(e);
+    if (this.nativeMarquee !== gesture) return;
+    if (!gesture.preview.selection.activated) {
+      const selected = gesture.extend ? [...gesture.old] : [];
+      if (gesture.deep && gesture.click) {
+        const i = selected.indexOf(gesture.click);
+        if (i >= 0 && gesture.extend) selected.splice(i, 1);
+        else selected.push(gesture.click);
+      }
+      this.studio.reflectSelection(selected);
+      this.studio.host.select(this.studio.state.doc, this.studio.state.selection, false);
+    }
+    this.nativeMarquee = null;
+    gesture.cleanup();
+    // The native stop helper captures this same selection in selection_post.
+  }
+  private cancelNativeMarquee() {
+    const gesture = this.nativeMarquee;
+    if (!gesture) return;
+    this.nativeMarquee = null;
+    gesture.cleanup();
+    // Stop the native document gesture without capturing an intermediate selection.
+    gesture.undo.cancelSelection(false);
+    const native = gesture.preview.selection;
+    for (const type of ['mousemove', 'touchmove'])
+      document.removeEventListener(type, native.sr_move_f);
+    for (const type of ['mouseup', 'touchend'])
+      document.removeEventListener(type, native.sr_stop_f);
+    delete native.sr_move_f;
+    delete native.sr_stop_f;
+    native.box.remove();
+    native.activated = false;
+    if (this.studio.state.doc.id === gesture.docId) {
+      this.studio.reflectSelection(gesture.old);
+      const restore = () => {
+        if (this.studio.state.doc.id === gesture.docId)
+          this.studio.host.select(this.studio.state.doc, gesture.old, false);
+      };
+      if (this.bb.Project === gesture.project) restore();
+      else gesture.project.whenNextOpen(restore);
+    }
   }
   private input(e: PointerEvent, preview: HostObject) {
     const world = this.world(e.clientX, e.clientY, preview);
@@ -661,6 +761,20 @@ export class ViewportController {
           )
             return;
           const handle = (e.target as HTMLElement).getAttribute?.('data-mcui-handle');
+          if (
+            !handle &&
+            this.active() &&
+            surface &&
+            e.button === 0 &&
+            !this.space &&
+            this.deepModifier(e)
+          ) {
+            stop(e);
+            (document.activeElement as HTMLElement)?.blur?.();
+            p.controls.stopMovement?.();
+            this.startNativeMarquee(e, p);
+            return;
+          }
           if (!handle && e.button === 0 && !this.space && !this.hit(e, p)) return;
           stop(e);
           (document.activeElement as HTMLElement)?.blur?.();
@@ -678,7 +792,7 @@ export class ViewportController {
         ((e: MouseEvent) => {
           if (
             this.navigationActive() &&
-            (this.pointerId !== null || e.button === 1 || this.space) &&
+            (this.pointerId !== null || !!this.nativeMarquee || e.button === 1 || this.space) &&
             e.button !== 2
           )
             stop(e);
@@ -701,6 +815,7 @@ export class ViewportController {
             this.draw();
             return;
           }
+          if (this.nativeMarquee) return;
           if (this.pointerId === null) {
             if (this.drawingActive()) {
               this.drawingTarget = pickDrawingParent(
@@ -786,6 +901,10 @@ export class ViewportController {
         { capture: true },
       );
       cleanup.listen(p.node, 'lostpointercapture', () => {
+        if (this.nativeMarquee) {
+          this.cancelNativeMarquee();
+          this.draw();
+        }
         if (this.pointerId !== null) {
           this.cancelInput();
           this.draw();
@@ -795,6 +914,12 @@ export class ViewportController {
         p.node,
         'contextmenu',
         ((e: MouseEvent) => {
+          if (this.nativeMarquee) {
+            stop(e);
+            this.cancelNativeMarquee();
+            this.draw();
+            return;
+          }
           if (!this.drawingActive()) return;
           stop(e);
           this.cancelInput();
@@ -825,7 +950,7 @@ export class ViewportController {
           if (!this.navigationActive()) return;
           this.bb.Preview.selected = p;
           stop(e);
-          if (this.drawing.request) return;
+          if (this.drawing.request || this.nativeMarquee) return;
           const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? p.height : 1;
           if (e.ctrlKey) {
             const before = this.world(e.clientX, e.clientY, p);
@@ -861,6 +986,21 @@ export class ViewportController {
         !['preview', 'outliner', 'element', 'transform'].includes(this.bb.Prop.active_panel))
     )
       return;
+    if (this.nativeMarquee) {
+      if (
+        e.key === 'Escape' ||
+        (down &&
+          (['Delete', 'Backspace'].includes(e.key) ||
+            ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z')))
+      ) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this.cancelNativeMarquee();
+        this.draw();
+        return;
+      }
+      if (['Meta', 'Control', 'Shift'].includes(e.key)) this.updateNativeMarquee(e);
+    }
     if (e.code === 'Space') {
       this.space = down;
       e.preventDefault();
@@ -923,6 +1063,11 @@ export class ViewportController {
   }
   draw() {
     if (this.bb.Project?.uuid !== this.projectId) return;
+    if (
+      this.nativeMarquee &&
+      (!this.active() || this.bb.Dialog.open || this.bb.open_interface || this.bb.open_menu)
+    )
+      this.cancelNativeMarquee();
     if (this.drawing.request && !this.drawingContext()) this.cancelInput();
     this.memory.views[this.currentView] = this.capture();
     this.grid.update(this.studio.state.view === '2d');
