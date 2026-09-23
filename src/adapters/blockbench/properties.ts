@@ -190,12 +190,15 @@ export class PropertyBridge {
       panel.form.setValues(values);
       this.inspector.refresh();
       const tabsKey = targets.map((n) => `${n.id}:${n.kind}:${n.content?.kind ?? ''}`).join('|');
-      if (tabsKey !== this.tabsKey) {
+      const tabsChanged = tabsKey !== this.tabsKey;
+      if (tabsChanged) {
         this.tabsKey = tabsKey;
         (panel.getHostPanel?.() ?? panel).update();
       }
       if (autoSelect && key && key !== this.selectionKey && this.bb.Modes.edit)
         this.inspector.selectPreferredTab();
+      // Tab availability can reattach native panel nodes; finish the entire docking pass.
+      if (tabsChanged) this.bb.updateInterfacePanels();
       if (autoSelect) this.selectionKey = key;
     } finally {
       this.refreshing = false;
