@@ -206,3 +206,92 @@ test('属性标签撑满右栏、随窗口调整且长表单内部滚动', async
   await expect(page.locator('.mcui-fill-inspector')).toHaveCount(0);
   await expect(page.locator('#right_bar > [panel_id=outliner]')).toBeVisible();
 });
+
+test('分离停靠的 UI 布局优先获得高度，元素区压缩并支持重新合并', async ({ page }) => {
+  await start(page);
+  await page.evaluate(() => window.Blockbench.mcuiStudio.getViewport().setInteraction('native'));
+  await expect(page.locator('.mcui-fill-inspector')).toHaveCount(0);
+  await page.evaluate(() => {
+    const bb = window as any,
+      p = bb.Interface.Panels;
+    p.mcui_layout.moveTo('right_bar');
+    p.mcui_layout.customizePosition({ fixed_height: true, height: 180 });
+    p.transform.customizePosition({ fixed_height: true, height: 750 });
+    p.transform.container.style.setProperty('--main-panel-height', '700px');
+    bb.updateInterfacePanels();
+    bb.Blockbench.mcuiStudio.getViewport().setInteraction('figma');
+  });
+  await expect(page.locator('#right_bar > [panel_id=mcui_layout]')).toHaveClass(
+    /mcui-fill-inspector/,
+  );
+  await expect(page.locator('#right_bar > [panel_id=transform]')).toHaveClass(
+    /mcui-compact-inspector/,
+  );
+  const sizes = () =>
+    page.evaluate(() => {
+      const box = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+      return {
+        available: box('#right_bar').height,
+        top: box('#right_bar > [panel_id=transform]').height,
+        bottom: box('#right_bar > [panel_id=mcui_layout]').height,
+      };
+    });
+  await expect
+    .poll(async () => {
+      const s = await sizes();
+      return s.bottom / s.available;
+    })
+    .toBeGreaterThan(0.65);
+  expect((await sizes()).top).toBeLessThan(220);
+  await page.screenshot({ path: '.cache/mcui-detached-inspector-height.png' });
+  await page.evaluate(() => window.BarItems.mcui_add_layer.trigger());
+  await expect
+    .poll(async () => {
+      const s = await sizes();
+      return s.bottom / s.available;
+    })
+    .toBeGreaterThan(0.65);
+  // Choosing UI Content in the upper group makes both UI groups share available height.
+  await page.locator('.panel_handle[panel_id=mcui_content]').click();
+  await expect(page.locator('#right_bar > [panel_id=transform]')).toHaveClass(
+    /mcui-fill-inspector/,
+  );
+  await page.evaluate(() => {
+    const p = (window as any).Interface.Panels;
+    p.transform.attachPanel(p.mcui_layout, -1);
+    p.transform.selectTab(p.mcui_layout);
+  });
+  await expect(page.locator('.mcui-compact-inspector')).toHaveCount(0);
+  await expect(page.locator('.mcui-fill-inspector')).toHaveCount(1);
+  await page.evaluate(() => window.Blockbench.mcuiStudio.getViewport().setInteraction('native'));
+  await expect(page.locator('.mcui-fill-inspector,.mcui-compact-inspector')).toHaveCount(0);
+  expect(
+    await page.evaluate(() => (window as any).Interface.Panels.transform.position_data.height),
+  ).toBe(750);
+});
+
+test('布局和内容都独立停靠时平分剩余高度，浮动面板不被撑高规则接管', async ({ page }) => {
+  await start(page);
+  await page.evaluate(() => {
+    const bb = window as any,
+      p = bb.Interface.Panels;
+    bb.BarItems.mcui_add_layer.trigger();
+    p.mcui_layout.moveTo('right_bar');
+    p.mcui_content.moveTo('right_bar');
+    p.transform.selectTab(p.element);
+    bb.updateInterfacePanels();
+  });
+  await expect(page.locator('.mcui-fill-inspector')).toHaveCount(2);
+  const heights = await page.evaluate(() =>
+    ['mcui_layout', 'mcui_content'].map(
+      (id) =>
+        document.querySelector(`#right_bar > [panel_id=${id}]`)!.getBoundingClientRect().height,
+    ),
+  );
+  expect(Math.abs(heights[0]! - heights[1]!)).toBeLessThan(3);
+  expect(Math.min(...heights)).toBeGreaterThan(280);
+  await page.evaluate(() => (window as any).Interface.Panels.mcui_content.moveTo('float'));
+  await expect(page.locator('[panel_id=mcui_content].mcui-fill-inspector')).toHaveCount(0);
+  await page.evaluate(() => window.Plugins.registered.mcui_studio.onunload());
+  await expect(page.locator('.mcui-fill-inspector,.mcui-compact-inspector')).toHaveCount(0);
+});

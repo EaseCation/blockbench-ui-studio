@@ -18,7 +18,7 @@ export class WorkspaceLayout {
   private updating = false;
   private disposed = false;
   private sidebars?: { left: boolean; right: boolean };
-  private inspector?: { container: HTMLElement; height: string; priority: string };
+  private inspectors = new Map<HTMLElement, { height: string; priority: string; role: string }>();
   constructor(
     private bb: HostRuntime,
     private current: () => Studio | null,
@@ -28,6 +28,9 @@ export class WorkspaceLayout {
       #right_bar > .mcui-fill-inspector:not(.folded){flex:1 1 0;min-height:90px;height:auto!important;overflow:hidden}
       #right_bar > .mcui-fill-inspector > .panel{flex:1 1 0;min-height:0;height:0;overflow-y:auto;overflow-x:hidden}
       #right_bar > .mcui-fill-inspector > .panel > .form{flex-shrink:0}
+      #right_bar > .mcui-compact-inspector:not(.folded){flex:0 1 auto;min-height:0;max-height:30%;height:auto!important;overflow:hidden}
+      #right_bar > .mcui-compact-inspector > .panel{flex:1 1 auto;min-height:0;height:auto;overflow-y:auto;overflow-x:hidden}
+      #right_bar > .mcui-compact-inspector > .panel > .form{flex-shrink:0}
     `;
     document.head.append(style);
     this.life.add(() => style.remove());
@@ -46,7 +49,10 @@ export class WorkspaceLayout {
       !this.bb.Blockbench.isMobile && this.bb.Modes.edit && app?.state.interaction === 'figma'
         ? app
         : null;
-    if (wanted === this.owner) return;
+    if (wanted === this.owner) {
+      if (wanted && this.syncInspectorSizing()) this.bb.updateInterfacePanels();
+      return;
+    }
     this.restore();
     if (!wanted) return;
     this.updating = true;
@@ -74,19 +80,11 @@ export class WorkspaceLayout {
       outliner.customizePosition({ sidebar_index: leftIndex - 1, fixed_height: false });
       outliner.fold(false);
       if (propertyHost !== outliner) propertyHost.moveTo('right_bar');
-      if (propertyHost !== outliner) {
-        const container = propertyHost.container as HTMLElement;
-        this.inspector = {
-          container,
-          height: container.style.getPropertyValue('--main-panel-height'),
-          priority: container.style.getPropertyPriority('--main-panel-height'),
-        };
-        container.classList.add('mcui-fill-inspector');
-      }
       for (const id of ['uv', 'textures']) {
         const host = panels[id]?.getContainerPanel();
         if (host && host !== outliner && host !== propertyHost) host.fold(true);
       }
+      this.syncInspectorSizing();
       this.bb.updateInterfacePanels();
       for (const entry of this.saved) {
         entry.changed = [
@@ -102,18 +100,66 @@ export class WorkspaceLayout {
       this.updating = false;
     }
   }
+  private restoreInspector(container: HTMLElement) {
+    const saved = this.inspectors.get(container);
+    if (!saved) return;
+    container.classList.remove('mcui-fill-inspector', 'mcui-compact-inspector');
+    if (saved.height)
+      container.style.setProperty('--main-panel-height', saved.height, saved.priority);
+    else container.style.removeProperty('--main-panel-height');
+    this.inspectors.delete(container);
+  }
+  /** Follow actual docking, including saved standalone panels and live native tab dragging. */
+  private syncInspectorSizing(): boolean {
+    const panels = this.bb.Interface.Panels;
+    const base = panels.element.getContainerPanel();
+    const docked = (panel: HostObject) => panel?.slot === 'right_bar' && !panel.attached_to;
+    const hosts = new Set<HostObject>();
+    for (const id of ['mcui_layout', 'mcui_content']) {
+      const panel = panels[id];
+      if (!panel || !this.bb.BARS.condition(panel.condition)) continue;
+      const host = panel.getContainerPanel();
+      if (docked(host)) hosts.add(host);
+    }
+    const hasSeparateUi = [...hosts].some((host) => host !== base);
+    const nativeTab = [panels.element, panels.transform].includes(base.open_attached_panel);
+    if (hasSeparateUi && nativeTab) hosts.delete(base);
+    if (!hosts.size && docked(base)) hosts.add(base);
+    const desired = new Map<HTMLElement, string>();
+    for (const host of hosts) desired.set(host.container, 'mcui-fill-inspector');
+    if (hosts.size && !hosts.has(base) && docked(base))
+      desired.set(base.container, 'mcui-compact-inspector');
+    let changed = false;
+    for (const container of this.inspectors.keys()) {
+      if (!desired.has(container)) {
+        this.restoreInspector(container);
+        changed = true;
+      }
+    }
+    for (const [container, role] of desired) {
+      let saved = this.inspectors.get(container);
+      if (saved?.role === role) continue;
+      if (!saved) {
+        saved = {
+          height: container.style.getPropertyValue('--main-panel-height'),
+          priority: container.style.getPropertyPriority('--main-panel-height'),
+          role,
+        };
+        this.inspectors.set(container, saved);
+      }
+      saved.role = role;
+      container.classList.remove('mcui-fill-inspector', 'mcui-compact-inspector');
+      container.classList.add(role);
+      changed = true;
+    }
+    return changed;
+  }
   private restore() {
     if (!this.owner || this.updating) return;
     this.updating = true;
     this.owner = null;
     try {
-      if (this.inspector) {
-        const { container, height, priority } = this.inspector;
-        container.classList.remove('mcui-fill-inspector');
-        if (height) container.style.setProperty('--main-panel-height', height, priority);
-        else container.style.removeProperty('--main-panel-height');
-        this.inspector = undefined;
-      }
+      for (const container of this.inspectors.keys()) this.restoreInspector(container);
       const panels = this.bb.Interface.Panels;
       const currentMode = this.bb.Interface.getUIMode();
       for (const { panel, data, before, previousSlot, changed, slotChanged } of this.saved) {
