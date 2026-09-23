@@ -105,4 +105,10 @@ stepExpression 纯数据转换保留百分比，input-step 与 input-scrub 适�
 
 `skills/ui-studio-bbmodel` 提供 AI 说明、设计描述、CLI 和独立宿主桥。CLI 只负责本地路径、PNG、临时 loopback 服务、无头 Chrome 和原子输出；host-bridge 复用纯布局/像素内核及 NativeHost，输出由 Blockbench codec 序列化。编译后再在全新页面重开检查 fingerprint/暂停规则，避免只更新逻辑或只更新原生数据。
 
---base 以逻辑 ID 保留绑定及原生绘画层；显式替换某个源图才使该源的绘画层备份失效。输入不是部分补丁，而是完整目标树。第三方 generated 内容仅在几何/规则/层级深度未受影响时保留，改变时拒绝并要求通过 provider 编辑。桥接代码由 tsconfig.authoring.json 参与类型检查，不被打包进运行时插件。
+--base 以逻辑 ID 保留绑定及原生绘画层；显式替换某个源图才使该源的绘画层备份失效。输入不是部分补丁，而是完整目标树。未加载 provider 时，第三方 generated 内容仅在几何/规则/层级深度未受影响时保留。显式加载本地文字插件后，桥通过 Content API 1 注册实际 provider，复用其字体准备、测量、烘焙及 seal；文字参数仍以 Cube 与恢复副本为权威。桥接代码由 tsconfig.authoring.json 参与类型检查，不被打包进运行时插件。
+
+## 原生 UI 文件显式转换
+
+文件工具新增 convert-source 宿主桥，先通过原生 codec 与文字插件 convertLegacy 读取，再按选定顶视方向烘焙纹理。叶子以真实世界 Y 排序，通过连续原 Group 路径重建 Frame，避免文件夹深度交错导致背景遮挡。三维 Group 只在 flattenGroups 显式列出时压平；非正向文字拒绝隐式旋转。转换只是文件创作工具，不修改运行时插件或放宽 schemaVersion 1 校验。
+
+CLI 提供字体文件内嵌、fontMap、转换报告、局部预览和预览倍率；build/extract 的 text 描述由 provider 处理。每次生成仍经干净宿主重开验证，输出不覆盖原文件，私有转换素材不进入仓库。

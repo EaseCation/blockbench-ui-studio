@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, rename, link, stat, copyFile, rm } from 'no
 import { resolve, dirname, extname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { build } from 'esbuild';
 import { chromium } from '@playwright/test';
 
@@ -13,6 +13,9 @@ const help = `UI Studio file authoring (run from any directory)
   node skills/ui-studio-bbmodel/scripts/ui-file.mjs inspect file.bbmodel
   node skills/ui-studio-bbmodel/scripts/ui-file.mjs extract file.bbmodel --out design.json [--force]
   node skills/ui-studio-bbmodel/scripts/ui-file.mjs validate file.bbmodel [--preview preview.png] [--force]
+  node skills/ui-studio-bbmodel/scripts/ui-file.mjs convert legacy.bbmodel --options conversion.json --out file.bbmodel [--design-out design.json] [--report report.json]
+Text: --text-plugin /path/to/bbmodel-text-component.js (trusted local plugin, executed in isolated host).
+Preview: --preview-scale 1|2|3|4 --preview-region 'x,y,width,height' (UI units).
 Host: MCUI_HOST_DIR or repository .cache/blockbench; Chrome: MCUI_CHROME_PATH or installed Google Chrome.
 Outputs default to no-overwrite. --force creates a timestamped backup of existing outputs.
 No running Blockbench session, user browser profile or network service is used.`;
@@ -23,7 +26,7 @@ if (!args.length || args.includes('--help')) {
 }
 const [command, filename, ...flags] = args;
 if (
-  !['build', 'inspect', 'extract', 'validate'].includes(command) ||
+  !['build', 'inspect', 'extract', 'validate', 'convert'].includes(command) ||
   !filename ||
   filename.startsWith('--')
 )
@@ -31,25 +34,47 @@ if (
 const options = {};
 for (let i = 0; i < flags.length; i++) {
   const flag = flags[i];
+  if (flag === '--preview-region') {
+    const v = String(flags[++i]).split(',').map(Number);
+    if (v.length !== 4 || !v.every(Number.isFinite) || v[2] <= 0 || v[3] <= 0)
+      throw new Error('preview-region requires x,y,width,height');
+    options.previewRegion = { x: v[0], y: v[1], width: v[2], height: v[3] };
+    continue;
+  }
+  if (flag === '--preview-scale') {
+    const n = Number(flags[++i]);
+    if (![1, 2, 3, 4].includes(n)) throw new Error('preview-scale must be 1/2/3/4');
+    options.previewScale = n;
+    continue;
+  }
   if (flag === '--force') {
     options.force = true;
     continue;
   }
   if (
-    !['--out', '--base', '--preview'].includes(flag) ||
+    ![
+      '--out',
+      '--base',
+      '--preview',
+      '--text-plugin',
+      '--options',
+      '--design-out',
+      '--report',
+    ].includes(flag) ||
     !flags[i + 1] ||
     flags[i + 1].startsWith('--')
   )
     throw new Error('Unknown or incomplete argument: ' + flag);
   options[flag.slice(2)] = resolve(flags[++i]);
 }
-if (['build', 'extract'].includes(command) && !options.out) throw new Error('--out is required');
+if (['build', 'extract', 'convert'].includes(command) && !options.out)
+  throw new Error('--out is required');
 if (options.base && command !== 'build') throw new Error('--base is only valid for build');
-if (options.out && !['build', 'extract'].includes(command))
-  throw new Error('--out is only valid for build/extract');
-if (options.preview && !['build', 'validate'].includes(command))
-  throw new Error('--preview is only valid for build/validate');
-if (options.out && extname(options.out) !== (command === 'build' ? '.bbmodel' : '.json'))
+if (options.out && !['build', 'extract', 'convert'].includes(command))
+  throw new Error('--out is only valid for build/extract/convert');
+if (options.preview && !['build', 'validate', 'convert'].includes(command))
+  throw new Error('--preview is only valid for build/validate/convert');
+if (options.out && extname(options.out) !== (command === 'extract' ? '.json' : '.bbmodel'))
   throw new Error('Output extension must be .bbmodel for build or .json for extract');
 if (options.preview && extname(options.preview) !== '.png')
   throw new Error('Preview output must be .png');
@@ -58,7 +83,18 @@ if (options.out && options.out === options.preview)
   throw new Error('Model/design and preview must have different paths');
 if (options.preview && [inputPath, options.base].includes(options.preview))
   throw new Error('Preview cannot overwrite a model/design input');
-for (const output of [options.out, options.preview].filter(Boolean)) {
+const destinations = [options.out, options.preview, options['design-out'], options.report].filter(
+  Boolean,
+);
+if (new Set(destinations).size !== destinations.length)
+  throw new Error('Output paths must be distinct');
+if ((options['design-out'] || options.report || options.options) && command !== 'convert')
+  throw new Error('Conversion options only valid for convert');
+for (const path of [options['design-out'], options.report].filter(Boolean))
+  if (extname(path) !== '.json') throw new Error('Design/report output must be .json');
+for (const output of destinations) {
+  if ([options.options, options['text-plugin']].includes(output))
+    throw new Error('Output cannot overwrite conversion options or plugin');
   if ([inputPath, options.base].includes(output) && !options.force)
     throw new Error('Use a new output path, or --force to back up and overwrite');
   try {
@@ -157,11 +193,46 @@ if (command === 'inspect') {
 }
 const base = command === 'build' ? (options.base ? await json(options.base) : undefined) : raw;
 if (base) {
-  const doc = docFrom(base);
-  for (const asset of Object.values(doc.assets)) checkPNG(asset.png);
+  if (command !== 'convert') {
+    const doc = docFrom(base);
+    for (const asset of Object.values(doc.assets)) checkPNG(asset.png);
+  }
   for (const texture of base.textures ?? []) checkPNG(texture.source);
 }
 const design = command === 'build' ? raw : undefined;
+const conversion =
+  command === 'convert' ? (options.options ? await json(options.options) : {}) : undefined;
+if (
+  command === 'convert' &&
+  !options['text-plugin'] &&
+  ((raw.elements ?? []).some((e) => e.type === 'bb_text' || e.bb_text) ||
+    Object.keys(raw.unhandled_root_fields?.bb_text?.entries ?? {}).length > 0)
+)
+  throw new Error('Text-bearing conversion requires --text-plugin');
+for (const [data, path] of [
+  [design, inputPath],
+  [conversion, options.options ?? inputPath],
+])
+  if (data) {
+    for (const font of data.fonts ?? []) {
+      if (font.file) {
+        const fontPath = resolve(dirname(path), font.file),
+          bytes = await readFile(fontPath);
+        if (
+          !['.otf', '.ttf', '.woff', '.woff2'].includes(extname(fontPath)) ||
+          bytes.length > 20 * 1024 * 1024
+        )
+          throw new Error('Expected font file <=20MiB');
+        font.data_url =
+          'data:font/' + extname(fontPath).slice(1) + ';base64,' + bytes.toString('base64');
+        font.hash = createHash('sha256').update(bytes).digest('hex');
+        font.name ??= font.id;
+        font.family ??= font.id;
+        font.format = extname(fontPath).slice(1);
+        delete font.file;
+      }
+    }
+  }
 if (design) {
   for (const [id, asset] of Object.entries(design.assets ?? {})) {
     if (asset.file) {
@@ -202,6 +273,7 @@ const bundle = await build({
   target: 'es2022',
   logLevel: 'silent',
 });
+const textPlugin = options['text-plugin'] ? await readFile(options['text-plugin'], 'utf8') : null;
 const server = createServer(async (req, res) => {
   try {
     const name = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
@@ -250,10 +322,22 @@ try {
   await page.goto(address);
   await page.waitForFunction(() => window.Blockbench?.setup_successful, {}, { timeout: 30000 });
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
+  if (textPlugin) {
+    await page.evaluate(() => {
+      window.UiFileAuthoring.prepareProvider();
+      window.Plugins.registered['bbmodel-text-component'] = new window.Blockbench.Plugin(
+        'bbmodel-text-component',
+      );
+    });
+    await page.addScriptTag({ content: textPlugin });
+  }
   const result = await page.evaluate((request) => window.UiFileAuthoring.run(request), {
     command,
     base,
     design,
+    conversion,
+    previewScale: options.previewScale,
+    previewRegion: options.previewRegion,
     preview: !!options.preview,
   });
   // Reopen serialized output in a clean host before publishing it.
@@ -266,6 +350,15 @@ try {
       { timeout: 30000 },
     );
     await verification.addScriptTag({ content: bundle.outputFiles[0].text });
+    if (textPlugin) {
+      await verification.evaluate(() => {
+        window.UiFileAuthoring.prepareProvider();
+        window.Plugins.registered['bbmodel-text-component'] = new window.Blockbench.Plugin(
+          'bbmodel-text-component',
+        );
+      });
+      await verification.addScriptTag({ content: textPlugin });
+    }
     await verification.evaluate(
       (model) => window.UiFileAuthoring.run({ command: 'validate', base: model }),
       result.model,
@@ -277,6 +370,9 @@ try {
   }
   if (options.out)
     await output(options.out, JSON.stringify(result.model ?? result.design, null, 2) + '\n');
+  if (options['design-out'])
+    await output(options['design-out'], JSON.stringify(result.design, null, 2) + '\n');
+  if (options.report) await output(options.report, JSON.stringify(result.report, null, 2) + '\n');
   console.log(
     JSON.stringify(
       {
@@ -293,5 +389,6 @@ try {
   );
 } finally {
   if (browser) await browser.close();
+  server.closeAllConnections();
   await new Promise((r) => server.close(r));
 }

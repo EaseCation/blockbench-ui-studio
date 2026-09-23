@@ -164,3 +164,5 @@ npm run ui:file -- validate work/edited.bbmodel
 ```
 
 需要当前仓库依赖、系统 Chrome 和构建好的测试宿主；详情见技能环境说明。设计描述是完整目标树，修改文件时保留 ID 并使用 `--base`，避免无意删除未列出的图层。文字扩展只保留既有成品，不假装支持无字体/provider 的重新排版。
+
+AI 文件工具也支持未使用 UI Studio 的原生平面 UI 显式转换，以及通过本地 BBModel Text Component 插件生成可编辑文字。转换需明确顶视方向、缺失字体替代与需压平的三维 Group；成品仍为标准 Cube/Group/Texture。详见 [AI Skill](skills/ui-studio-bbmodel/SKILL.md)、[原生 UI 转换](skills/ui-studio-bbmodel/references/legacy-conversion.md) 与 [文字内容](skills/ui-studio-bbmodel/references/text-content.md)。集成回归可用 `MCUI_TEXT_PLUGIN=/path/to/bbmodel-text-component.js` 指定文字插件 bundle，默认探测同级文字插件仓库。

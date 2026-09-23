@@ -26,12 +26,12 @@ UI X 映射世界 X，UI Y 映射世界 Z。Cube.from.y 与 to.y 相等，为 0 
 
 若校验发现暂停规则或差异保护，常见原因包括：仅改 metadata；移动了内容 Cube；改变了 Y 厚度/旋转/UV；删除了 Texture；把纹理改为未内嵌外部文件；修改了源图而未生成成品。
 
-不要删除 fingerprint 或 suspended 来压下报错。脚本不自动采用差异现场、不把普通 3D bbmodel 自动转换为 UI 项目；应先在插件中由用户选择采用当前结果或按规则重建。
+不要删除 fingerprint 或 suspended 来压下报错。build/validate 不自动采用差异现场；应先在插件中决定采用当前结果或按规则重建。未使用 UI Studio 的平面 UI 可显式使用 convert，见 legacy-conversion.md；这不是旧版 UI schema 的迁移路径。
 
 ## 原生绘画层与第三方内容
 
 未替换来源时保留 nativeSources；替换某个源 PNG 时仅删除该源的旧层备份，避免旧图层把新素材覆盖回去。原生绘画层的合成由 NativeHost.prepareSources/applyPaintLayers 完成，不从 JSON 猜测合成公式。
 
-generated 文字参数的权威副本位于内容 Cube 的 provider 属性及 `unhandled_root_fields[provider].entries[surfaceId]`；UI document 中的 data 是运行时草稿，不是保存权威。没有字体资源和 provider.measure/render/seal 的离线脚本不应伪造这套元数据。脚本只保留未受影响的 generated 节点，使用其保存的成品预览；需要编辑时使用对应内容插件。
+generated 文字参数的权威副本位于内容 Cube 的 provider 属性及 `unhandled_root_fields[provider].entries[surfaceId]`；UI document 中的 data 是运行时草稿，不是保存权威。没有字体资源和 provider.measure/render/seal 的离线脚本不应伪造这套元数据。未加载 provider 时脚本只保留未受影响的 generated 节点。通过 --text-plugin 加载实际文字插件后支持可编辑文字，见 text-content.md。
 
 脚本不建立游戏 JSON、运行时绑定、裁切、Grid 或多用户协作能力。PNG 预览是二维成品合成，用于视觉检查；它不是透视视口截图。

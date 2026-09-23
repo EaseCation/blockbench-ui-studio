@@ -41,7 +41,7 @@ Auto 两端分布使用 gap 作为下限。主轴 Hug 使用这个下限计算�
 { "kind": "paint", "source": "asset-id", "mode": "extend", "origin": { "x": 0, "y": 0 } }
 ```
 
-paint 的 mode 为 extend（保持像素、裁切或扩展）或 scale（从源图重采样）。source 可省略，自动生成透明源；其它内容类型必须提供 source。
+paint 的 mode 为 extend（保持像素、裁切或扩展）或 scale（从源图重采样）。source 可省略，自动生成透明源；image/nine-slice 必须提供 source；text 由文字 provider 生成来源。
 
 ```json
 {
@@ -111,4 +111,8 @@ PNG 文件相对设计描述路径解析。像素 rows 的行数与字符数必�
 
 `extract` 输出完整描述，含源素材、全部节点和当前参数。`build --base` 使用旧文件的逻辑 ID 匹配绑定；移出/插入层级会重新计算世界位置与 Y 顺序，x/y 仍按新父级解释。若要保留换父级前的世界位置，应先按新父边界重算偏移。
 
-generated 内容提取为 `{ "kind": "generated", "preserve": true }`，仅支持原文件中对应节点。不可通过这份描述新建或重排文字版式；会改变 generated 尺寸、布局参数、外观、来源、父级或深度的更新被拒绝。若任务需要这些变化，先在对应文字插件中完成并保存，再提取。
+未加载文字 provider 时，generated 内容提取为 `{ "kind": "generated", "preserve": true }`，仅支持原文件中对应节点。不可通过这份描述新建或重排文字版式；会改变 generated 尺寸、布局参数、外观、来源、父级或深度的更新被拒绝。若任务需要这些变化，先在对应文字插件中完成并保存，再提取。
+
+## 可编辑文字
+
+顶层可增加 `fonts` 数组，Image 的 `content.kind="text"`。加载 `--text-plugin` 后 extract 输出完整文字参数，build 通过实际 provider 更新。字号倍率、字体文件与换行规则见 [text-content.md](text-content.md)。不要将字体字号直接填入 `font_size`，也不要把已有的文字权威参数写到 UI document.content.data 后直接保存。

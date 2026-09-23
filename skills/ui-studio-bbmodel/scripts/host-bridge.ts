@@ -1,6 +1,9 @@
 import { NativeHost } from '../../../src/adapters/blockbench/native-host';
 import { hostRuntime } from '../../../src/adapters/blockbench/runtime';
 import { Studio } from '../../../src/application/studio';
+import { contentApi } from '../../../src/adapters/blockbench/content-api';
+import { contentProviders } from '../../../src/application/content';
+import { convertSource } from './convert-source';
 import { imagePort } from '../../../src/platform/browser/images';
 import { clone, validateDocument } from '../../../src/domain/document';
 import { layout } from '../../../src/domain/layout';
@@ -16,6 +19,34 @@ import {
 } from '../../../src/domain/types';
 
 const bb = hostRuntime();
+let activeApp: Studio | null = null;
+export function prepareProvider() {
+  const contents = contentApi(bb, () => activeApp);
+  bb.Blockbench.mcuiStudio = { contents: contents.api };
+}
+function resolveLayout(doc: UiDocument) {
+  return layout(doc, (n, width) => {
+    const c = n.content;
+    if (c?.kind !== 'generated' || !c.data || c.data.resize === 'scale') return undefined;
+    const p = contentProviders.get(c.provider);
+    return p?.ready(c.data) ? p.measure(c.data, width) : undefined;
+  });
+}
+function importFonts(fonts: any[] = []) {
+  if (!fonts.length) return;
+  bb.Project.unhandled_root_fields ??= {};
+  const store = (bb.Project.unhandled_root_fields.bb_text ??= {
+    version: 1,
+    fonts: [],
+    entries: {},
+  });
+  for (const font of fonts) {
+    if (!font.id || !font.data_url || !font.hash) fail('Font resource requires id/data_url/hash');
+    const old = store.fonts.find((f: any) => f.id === font.id);
+    if (old && old.hash !== font.hash) fail(`Font id collision: ${font.id}`);
+    if (!old) store.fonts.push(clone(font));
+  }
+}
 const fail = (message: string): never => {
   throw new Error(message);
 };
@@ -82,6 +113,8 @@ function paintAsset(spec: any): Pixels {
   return result;
 }
 async function load(model?: any) {
+  activeApp = null;
+  if (bb.Project) bb.Project.saved = true;
   bb.newProject(bb.Formats.free);
   if (model) bb.Codecs.project.parse(model);
   if (model)
@@ -96,6 +129,7 @@ async function load(model?: any) {
   if (doc) {
     await host.prepareSources();
     const check = new Studio(host, imagePort, doc);
+    activeApp = check;
     await check.initialize();
     if (check.state.error) fail(check.state.error);
     const issues = Object.values(check.state.doc.nodes).filter((n) => n.suspended);
@@ -105,7 +139,6 @@ async function load(model?: any) {
       Object.keys(doc.nodes).length !== Object.keys(check.state.doc.nodes).length
     )
       fail('Native/model divergence: ' + issues.map((n) => `${n.name}: ${n.suspended}`).join('; '));
-    check.dispose();
   }
   return { host, doc };
 }
@@ -142,9 +175,13 @@ function designFromDoc(doc: UiDocument, name: string) {
       ...(n.content
         ? {
             content:
-              n.content.kind === 'generated'
-                ? { kind: 'generated', preserve: true }
-                : clone(n.content),
+              n.content.kind === 'generated' &&
+              n.content.provider === 'bb_text' &&
+              contentProviders.has('bb_text')
+                ? { kind: 'text', ...n.content.data, fingerprint: undefined, suspended: undefined }
+                : n.content.kind === 'generated'
+                  ? { kind: 'generated', preserve: true }
+                  : clone(n.content),
           }
         : {}),
       appearance: n.appearance,
@@ -155,13 +192,16 @@ function designFromDoc(doc: UiDocument, name: string) {
   return {
     version: 1,
     name,
+    ...(contentProviders.has('bb_text')
+      ? { fonts: clone(bb.Project.unhandled_root_fields?.bb_text?.fonts ?? []) }
+      : {}),
     assets: Object.fromEntries(Object.values(doc.assets).map((a) => [a.id, { png: a.png }])),
     nodes: doc.roots.map(visit),
   };
 }
 
 async function compileDesign(design: any, base: UiDocument | null): Promise<UiDocument> {
-  keys(design, ['version', 'name', 'assets', 'nodes'], 'design');
+  keys(design, ['version', 'name', 'assets', 'nodes', 'fonts'], 'design');
   if (design.version !== 1 || !Array.isArray(design.nodes))
     fail('design version must be 1 with nodes array');
   const doc = createDocument(base?.id ?? crypto.randomUUID());
@@ -280,8 +320,80 @@ async function compileDesign(design: any, base: UiDocument | null): Promise<UiDo
       if (['direction', 'gap', 'padding', 'justify', 'align'].some((k) => spec[k] !== undefined))
         fail('Image children use free positioning; put a Stack Frame inside it');
       const c = spec.content ?? { kind: 'paint' };
-      choice(c.kind, ['paint', 'image', 'nine-slice', 'generated'], 'content.kind');
-      if (c.kind === 'generated') {
+      choice(c.kind, ['paint', 'image', 'nine-slice', 'generated', 'text'], 'content.kind');
+      if (c.kind === 'text') {
+        keys(
+          c,
+          [
+            'kind',
+            'version',
+            'text',
+            'font_id',
+            'font_size',
+            'line_height',
+            'letter_spacing',
+            'align',
+            'color',
+            'opacity',
+            'sizing',
+            'resize',
+            'box_width',
+            'box_height',
+            'density',
+            'plane',
+            'reference',
+          ],
+          'text',
+        );
+        if (!contentProviders.has('bb_text')) fail('Text creation/editing requires --text-plugin');
+        const data = {
+          version: 1,
+          text: String(c.text ?? ''),
+          font_id: c.font_id ?? 'font_default_minecraft',
+          font_size: number(c.font_size ?? 1, 'font_size', 0.01),
+          line_height: number(c.line_height ?? 1.2, 'line_height', 0.1),
+          letter_spacing: number(c.letter_spacing ?? 0, 'letter_spacing'),
+          align: choice(c.align ?? 'left', ['left', 'center', 'right'], 'text.align'),
+          color: c.color ?? '#ffffff',
+          opacity: number(c.opacity ?? 1, 'text.opacity', 0),
+          sizing: choice(c.sizing ?? 'fixed', ['auto', 'height', 'fixed'], 'text.sizing'),
+          resize: choice(c.resize ?? 'reflow', ['reflow', 'scale'], 'text.resize'),
+          box_width: c.box_width ?? 32,
+          box_height: c.box_height ?? 16,
+          density: c.density ?? 4,
+          plane: 'up',
+          ...(c.reference ? { reference: c.reference } : {}),
+        };
+        if (c.version !== undefined && c.version !== 1) fail('Text version must be 1');
+        if (c.plane !== undefined && c.plane !== 'up') fail('UI text plane must be up');
+        if (data.resize === 'scale' && !data.reference)
+          data.reference = {
+            width: number(data.box_width, 'box_width', 1),
+            height: number(data.box_height, 'box_height', 1),
+          };
+        if (data.reference) {
+          keys(data.reference, ['width', 'height'], 'text.reference');
+          number(data.reference.width, 'reference.width', 1);
+          number(data.reference.height, 'reference.height', 1);
+        }
+        if (![1, 2, 4].includes(data.density) || data.opacity > 1)
+          fail('Invalid text density or opacity');
+        color(data.color);
+        const source = old?.content?.kind === 'generated' ? old.content.source : `text:${id}`;
+        if (!doc.assets[source])
+          doc.assets[source] = base?.assets[source]
+            ? clone(base.assets[source]!)
+            : { id: source, width: 1, height: 1, png: imagePort.encode(blank(1, 1)), revision: 1 };
+        n.content = {
+          kind: 'generated',
+          provider: 'bb_text',
+          data,
+          source,
+          logicalSize: old?.rect
+            ? { width: old.rect.width, height: old.rect.height }
+            : { width: 32, height: 16 },
+        };
+      } else if (c.kind === 'generated') {
         keys(c, ['kind', 'preserve'], 'generated content');
         if (!c.preserve || old?.content?.kind !== 'generated')
           fail('Generated/text content can only be preserved from a base file');
@@ -355,6 +467,7 @@ async function compileDesign(design: any, base: UiDocument | null): Promise<UiDo
         choice(n.appearance!.fill, ['none', 'solid', 'linear'], 'fill');
       }
       if (spec.rasterSize) {
+        if (c.kind === 'text') fail('Text resolution uses density/reference, not rasterSize');
         if (c.kind === 'nine-slice') fail('nine-slice always follows target dimensions');
         keys(spec.rasterSize, ['width', 'height'], 'rasterSize');
         n.rasterSize = {
@@ -372,7 +485,7 @@ async function compileDesign(design: any, base: UiDocument | null): Promise<UiDo
         'originalRasterSize',
       ] as const)
         if (old[k] !== undefined) (n as any)[k] = clone(old[k]);
-      if (n.content?.kind === 'generated') {
+      if (n.content?.kind === 'generated' && spec.content?.kind !== 'text') {
         if (!same(spec.rasterSize, old.rasterSize))
           fail(`${id}: generated/text rasterSize must be preserved`);
         n.rasterSize = old.rasterSize;
@@ -393,20 +506,28 @@ async function compileDesign(design: any, base: UiDocument | null): Promise<UiDo
   return doc;
 }
 
-async function preview(doc: UiDocument) {
-  const scene = layout(doc);
-  const rect = bounds(
-    Object.values(scene.nodes)
-      .filter((n) => n.visible)
-      .map((n) => n.rect),
-  );
+async function preview(
+  doc: UiDocument,
+  scale = 1,
+  region?: { x: number; y: number; width: number; height: number },
+) {
+  const scene = resolveLayout(doc);
+  const rect =
+    region ??
+    bounds(
+      Object.values(scene.nodes)
+        .filter((n) => n.visible)
+        .map((n) => n.rect),
+    );
   if (!rect) return null;
-  if (rect.width * rect.height > 16_777_216) fail('preview exceeds 16 million pixels');
+  if (rect.width * rect.height * scale * scale > 16_777_216)
+    fail('preview exceeds 16 million pixels');
   const canvas = document.createElement('canvas');
-  canvas.width = rect.width;
-  canvas.height = rect.height;
+  canvas.width = Math.ceil(rect.width * scale);
+  canvas.height = Math.ceil(rect.height * scale);
   const ctx = canvas.getContext('2d')!;
   ctx.imageSmoothingEnabled = false;
+  ctx.scale(scale, scale);
   for (const id of scene.order) {
     const n = doc.nodes[id]!,
       r = scene.nodes[id]!;
@@ -418,17 +539,55 @@ async function preview(doc: UiDocument) {
   return { png: canvas.toDataURL(), bounds: rect };
 }
 
-export async function run(request: any) {
+export async function run(request: any): Promise<any> {
+  if (request.command === 'convert') {
+    activeApp = null;
+    const source = clone(request.base),
+      options = request.conversion ?? {};
+    source.bb_text_fonts = [...(source.bb_text_fonts ?? []), ...(options.fonts ?? [])];
+    source.unhandled_root_fields ??= {};
+    if (source.unhandled_root_fields.bb_text)
+      source.unhandled_root_fields.bb_text.fonts = [
+        ...(source.unhandled_root_fields.bb_text.fonts ?? []),
+        ...(options.fonts ?? []),
+      ];
+    for (const e of source.elements ?? []) {
+      if (e.type === 'bb_text' && options.fontMap?.[e.font_id])
+        e.font_id = options.fontMap[e.font_id];
+      if (e.bb_text && options.fontMap?.[e.bb_text.font_id])
+        e.bb_text.font_id = options.fontMap[e.bb_text.font_id];
+    }
+    for (const data of Object.values(
+      source.unhandled_root_fields.bb_text?.entries ?? {},
+    ) as any[]) {
+      if (options.fontMap?.[data.font_id]) data.font_id = options.fontMap[data.font_id];
+    }
+    const converted = await convertSource(source, options);
+    const result = await run({
+      command: 'build',
+      design: converted.design,
+      preview: true,
+      previewScale: request.previewScale,
+      previewRegion: request.previewRegion,
+    });
+    return { ...result, design: converted.design, report: converted.report };
+  }
   const { host, doc: base } = await load(request.base);
+  importFonts(request.design?.fonts);
   if (request.command === 'extract') return { design: designFromDoc(base!, bb.Project.name) };
   if (request.command === 'validate')
     return {
       nodes: Object.keys(base!.nodes).length,
       images: Object.values(base!.nodes).filter((n) => n.kind === 'image').length,
-      preview: request.preview ? await preview(base!) : undefined,
+      preview: request.preview
+        ? await preview(base!, request.previewScale ?? 1, request.previewRegion)
+        : undefined,
     };
   const doc = await compileDesign(request.design, base);
-  const scene = layout(doc),
+  for (const n of Object.values(doc.nodes))
+    if (n.content?.kind === 'generated' && n.content.data)
+      await contentProviders.get(n.content.provider)?.prepare(n.content.data);
+  const scene = resolveLayout(doc),
     bitmaps: Record<string, Pixels> = {};
   let total = 0;
   const oldScene = base ? layout(base) : null;
@@ -437,6 +596,45 @@ export async function run(request: any) {
     n.rect = { ...scene.nodes[id]!.rect };
     if (!n.content) continue;
     if (n.content.kind === 'generated') {
+      const c = n.content,
+        p = contentProviders.get(c.provider);
+      if (p && c.data) {
+        const data = c.data,
+          r = n.rect;
+        if (data.resize !== 'scale') {
+          data.sizing =
+            n.layout.width.kind === 'hug' && n.layout.height.kind === 'hug'
+              ? 'auto'
+              : n.layout.height.kind === 'hug'
+                ? 'height'
+                : 'fixed';
+          data.box_width = r.width;
+          data.box_height = r.height;
+        }
+        const key = JSON.stringify([
+          c.provider,
+          p.key(data),
+          data.resize === 'scale' ? data.reference : { width: r.width, height: r.height },
+          n.opacity,
+          n.appearance,
+        ]);
+        const pixels = p.render(data, r),
+          assetId = crypto.randomUUID();
+        total += pixels.width * pixels.height;
+        if (total > 32_000_000) fail('rendered pixel budget exceeded');
+        doc.assets[assetId] = {
+          id: assetId,
+          width: pixels.width,
+          height: pixels.height,
+          png: imagePort.encode(pixels),
+          revision: 1,
+        };
+        c.source = assetId;
+        c.logicalSize = { width: r.width, height: r.height };
+        c.renderedKey = key;
+        bitmaps[id] = decorate(pixels, n.appearance, n.opacity);
+        continue;
+      }
       const old = base?.nodes[id];
       if (
         !old ||
@@ -482,6 +680,7 @@ export async function run(request: any) {
     renderer.read();
     await renderer.prepareSources();
   }
+  activeApp = new Studio(renderer, imagePort, doc);
   renderer.apply(doc, scene, bitmaps, base);
   renderer.write(doc);
   const model = bb.Codecs.project.compile({ raw: true, bitmaps: true, editor_state: false });
@@ -506,7 +705,7 @@ export async function run(request: any) {
   }
   return {
     model,
-    preview: await preview(doc),
+    preview: await preview(doc, request.previewScale ?? 1, request.previewRegion),
     summary: { nodes: scene.order.length, images: Object.keys(bitmaps).length, documentId: doc.id },
   };
 }
