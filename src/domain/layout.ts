@@ -1,7 +1,11 @@
 import type { Axis, Id, Rect, ResolvedScene, UiDocument, UiNode } from './types';
 import { defaultFrame } from './types';
 
-export function layout(doc: UiDocument): ResolvedScene {
+export type ContentMeasure = (
+  node: UiNode,
+  width?: number,
+) => { width: number; height: number } | undefined;
+export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): ResolvedScene {
   const scene: ResolvedScene = { nodes: {}, order: [] };
   const sizes = new Map<string, number>(),
     resolving = new Set<string>();
@@ -40,8 +44,17 @@ export function layout(doc: UiDocument): ResolvedScene {
       value = measure(node(n.parent), axis) * rule.percent + rule.pixels;
     } else if (rule.kind === 'hug') {
       if (n.kind === 'image') {
+        const generated = n.content?.kind === 'generated' ? n.content : undefined;
+        const measured =
+          generated && contentMeasure?.(n, axis === 'height' ? measure(n, 'width') : undefined);
         const a = n.content && doc.assets[n.content.source];
-        value = a ? a[axis] : n.rect[axis];
+        value = measured
+          ? measured[axis]
+          : generated
+            ? generated.logicalSize[axis]
+            : a
+              ? a[axis]
+              : n.rect[axis];
       } else {
         const f = n.frame ?? defaultFrame(),
           children = flow(n);

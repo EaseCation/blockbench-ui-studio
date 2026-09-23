@@ -14,6 +14,8 @@ export function anchorLabel(value: number[] | undefined): string {
 }
 
 export function resizeStrategy(n: UiNode): string {
+  if (n.content?.kind === 'generated')
+    return n.content.data?.resize === 'scale' ? 'text-scale' : 'text-reflow';
   if (n.content?.kind === 'nine-slice') return 'nine';
   if (n.rasterSize) return 'preserve';
   return n.content?.kind === 'paint' ? n.content.mode : 'image';
@@ -40,7 +42,10 @@ export function inspect(doc: UiDocument, nodes: UiNode[]) {
   const b = common(nodes.map((n) => n.layout.anchorTo));
   const strategy = common(nodes.map(resizeStrategy));
   const resolutions = nodes.map((n) => {
-    const size = n.rasterSize ?? n.rect;
+    const size =
+      n.content?.kind === 'generated'
+        ? (doc.assets[n.content.source] ?? n.rect)
+        : (n.rasterSize ?? n.rect);
     const stretched = size.width * n.rect.height !== size.height * n.rect.width;
     return `显示 ${n.rect.width}×${n.rect.height} · 贴图 ${size.width}×${size.height}${stretched ? ' · 比例不同，会拉伸' : ''}`;
   });
@@ -92,7 +97,12 @@ export function editCompound(n: UiNode, key: string, value: unknown): boolean {
     const v = Number(value);
     if (!Number.isSafeInteger(v) || v < 0) throw new Error('内边距必须是非负整数');
     for (const index of indices) n.frame.padding[index] = v;
-  } else if (key === 'resizeStrategy' && n.content && n.content.kind !== 'nine-slice') {
+  } else if (
+    key === 'resizeStrategy' &&
+    n.content &&
+    n.content.kind !== 'nine-slice' &&
+    n.content.kind !== 'generated'
+  ) {
     if (value === 'preserve') n.rasterSize ??= { width: n.rect.width, height: n.rect.height };
     else {
       delete n.rasterSize;

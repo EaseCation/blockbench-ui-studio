@@ -74,3 +74,11 @@ application/inspector 提供不依赖 DOM 的混合值、摘要、适用上下�
 ## 2D 大纲工具栏
 
 OutlinerToolbar 仅在 MC UI 的顶视正交编辑态，通过工具栏局部 CSS 排序和隐藏按钮，并为 outliner 实例设置原生 Menu。Toolbar.children、Action.condition、保存的工具栏排列与宿主原型均不改动。模式／项目切换和卸载移除局部样式、恢复原菜单；原生新增子菜单过滤本插件已提供的操作，避免 Action.menu_node 在同一菜单树重复出现。
+
+## 文字内容扩展（Content API 1）
+
+`Blockbench.mcuiStudio.contents` 是外部插件的版本化接入面，提供 register、inspect、owner、create、update、begin/preview/finish、rasterize、regenerate。外部插件不调用 Studio/NativeHost 内部诊断接口。内容提供者准备字体后同步提供 measure/render，seal/fallback 在宿主适配器隔离原生指纹与剪贴板成品获取。
+
+GeneratedRecipe 保存 provider、成品 source、logicalSize 和 renderedKey。data 只存在运行时草稿，文件中从当前或归档内容 Cube 的 Property 及项目恢复副本恢复；UI 文档不重复保存可编辑文字参数。原生对象发布、贴图、恢复副本与字体资源共用一次 Undo；没有提供者时保留已生成像素。图层复制后重新渲染使用新源，不覆盖共享原图。
+
+布局引擎通过纯数据 ContentMeasure 在 Hug 高度计算中解析实际宽度，沿用循环检测。图片/九宫格/绘画的原有策略不变。新版素材摘要区识别文字并提供编辑入口，图片裁切与九宫格按钮对文字隐藏；文字插件自己的原生标签承载字体和排版属性。

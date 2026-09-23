@@ -122,7 +122,8 @@ export const fields: Field[] = [
     label: '贴图尺寸',
     type: 'select',
     options: { preserve: '保留分辨率', follow: '跟随图层尺寸' },
-    applies: (n) => !!n.content && n.content.kind !== 'nine-slice',
+    applies: (n) =>
+      !!n.content && n.content.kind !== 'nine-slice' && n.content.kind !== 'generated',
     read: (n) => (n.rasterSize ? 'preserve' : 'follow'),
     write: (n, v) => {
       if (v === 'preserve') n.rasterSize ??= { width: n.rect.width, height: n.rect.height };

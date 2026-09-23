@@ -334,3 +334,48 @@ it('拖绘创建按目标尺寸分配透明贴图，所有对象只占一次事�
   ).toBeNull();
   expect(JSON.stringify(app.state.doc)).toBe(old);
 });
+
+describe('内容提供者事务', () => {
+  it('重新渲染不改写复制图层共享的旧源，移动不重新生成文字', async () => {
+    const { contentProviders } = await import('../../src/application/content');
+    let renders = 0;
+    contentProviders.set('text', {
+      id: 'text',
+      title: 'Text',
+      icon: 'text_fields',
+      prepare: async () => {},
+      ready: () => true,
+      key: (data) => String(data.text),
+      measure: () => ({ width: 20, height: 10 }),
+      render: (data) => {
+        renders++;
+        return {
+          width: 1,
+          height: 1,
+          data: new Uint8ClampedArray([String(data.text).length, 0, 0, 255]),
+        };
+      },
+      edit: () => {},
+    });
+    try {
+      const { app, host } = fixture();
+      const id = app.createContent('text', { text: 'one', sizing: 'auto' })!;
+      const source = app.state.doc.nodes[id]!.content!.source;
+      app.update(id, (n) => {
+        n.layout.offset.x += 3;
+      });
+      expect(renders).toBe(1);
+      app.duplicate();
+      const copy = app.state.selection[0]!;
+      app.execute('text', (doc) =>
+        app.editContentNode(doc.nodes[copy]!, { text: 'longer', sizing: 'auto' }),
+      );
+      expect(app.state.doc.nodes[id]!.content!.source).toBe(source);
+      expect(app.state.doc.nodes[copy]!.content!.source).not.toBe(source);
+      expect(host.bitmaps[id]!.data[0]).toBe(3);
+      expect(host.bitmaps[copy]!.data[0]).toBe(6);
+    } finally {
+      contentProviders.delete('text');
+    }
+  });
+});

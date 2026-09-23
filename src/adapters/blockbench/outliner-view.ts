@@ -32,6 +32,7 @@ export class OutlinerView {
             b.containerId,
             b.surfaceId,
             doc.nodes[id]?.kind,
+            doc.nodes[id]?.content?.kind,
             doc.nodes[id]?.frame?.direction,
           ]),
         ])
@@ -59,7 +60,9 @@ export class OutlinerView {
           group,
           'icon',
           n.kind === 'image'
-            ? 'image'
+            ? n.content?.kind === 'generated'
+              ? 'text_fields'
+              : 'image'
             : n.frame?.engineType === 'stack_panel'
               ? 'view_week'
               : 'crop_free',
@@ -67,7 +70,11 @@ export class OutlinerView {
         this.bb.Vue.set(
           group,
           'title',
-          n.kind === 'image' ? 'Image' : `Frame · ${n.frame?.engineType}`,
+          n.kind === 'image'
+            ? n.content?.kind === 'generated'
+              ? '文字'
+              : 'Image'
+            : `Frame · ${n.frame?.engineType}`,
         );
       }
     this.bb.Outliner.updateNodeDisplayRules();

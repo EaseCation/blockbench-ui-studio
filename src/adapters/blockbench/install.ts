@@ -1,3 +1,6 @@
+import { contentMetadata } from './content-carrier';
+import { contentApi } from './content-api';
+import { contentProviders } from '../../application/content';
 import { Studio } from '../../application/studio';
 import { OutlinerToolbar } from './outliner-toolbar';
 import { clone, descendants, topSelection } from '../../domain/document';
@@ -86,6 +89,7 @@ export function install(bb: HostRuntime) {
             if (host.active()) {
               properties.refresh(false);
               outlinerView.update(app.state.doc);
+              bb.Blockbench.dispatchEvent('mcui_content_changed');
             }
           }),
         );
@@ -131,6 +135,7 @@ export function install(bb: HostRuntime) {
         if (host.active()) {
           properties.refresh(false);
           outlinerView.update(app.state.doc);
+          bb.Blockbench.dispatchEvent('mcui_content_changed');
         }
       }),
     );
@@ -178,6 +183,9 @@ export function install(bb: HostRuntime) {
     for (const id of Object.keys(doc.nodes)) if (!keep.has(id)) delete doc.nodes[id];
     for (const id of roots) doc.nodes[id]!.parent = null;
     doc.bindings = {};
+    doc.contentResources = Object.fromEntries(
+      [...contentProviders].map(([id, p]) => [id, p.resources?.()]),
+    );
     internalClipboard = doc;
     navigator.clipboard?.writeText(`MCUI:${JSON.stringify(doc)}`).catch(() => {});
   }
@@ -321,7 +329,7 @@ export function install(bb: HostRuntime) {
       'UI：设为九宫格',
       'grid_on',
       () => withLayer((app, id) => app.makeNine(id)),
-      selectedLayer,
+      () => selectedLayer() && properties.targets()[0]?.content?.kind !== 'generated',
     ),
     command(
       'mcui_content_preview',
@@ -338,7 +346,7 @@ export function install(bb: HostRuntime) {
             })
             .catch((error) => app.report(error));
         }),
-      selectedLayer,
+      () => selectedLayer() && properties.targets()[0]?.content?.kind !== 'generated',
     ),
     command(
       'mcui_flatten',
@@ -679,13 +687,21 @@ export function install(bb: HostRuntime) {
   life.add(
     bb.Blockbench.on('create_undo_save', ({ save }: HostObject) => {
       const entry = get();
-      if (entry) save.mcui_studio = entry.host.metadata();
+      if (entry) {
+        save.mcui_studio = entry.host.metadata();
+        save.mcui_contents = contentMetadata(bb.Project);
+      }
     }),
   );
   life.add(
     bb.Blockbench.on('load_undo_save', ({ save }: HostObject) => {
       const entry = get();
       if (entry && 'mcui_studio' in save) entry.host.restoreMetadata(save.mcui_studio);
+      if (entry && save.mcui_contents)
+        for (const [key, data] of Object.entries(save.mcui_contents)) {
+          if (data) bb.Project.unhandled_root_fields[key] = clone(data);
+          else delete bb.Project.unhandled_root_fields[key];
+        }
     }),
   );
   for (const event of ['undo', 'redo'])
@@ -725,15 +741,19 @@ export function install(bb: HostRuntime) {
       }
     }),
   );
+  const contents = contentApi(bb, () => current);
+  life.add(() => contents.dispose());
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.7.1',
+    version: '0.8.0',
+    contents: contents.api,
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,
     getViewport: () => viewport,
   };
   life.add(() => delete bb.Blockbench.mcuiStudio);
+  bb.Blockbench.dispatchEvent('mcui_content_api_ready', { version: 1 });
   void activate();
   return () => {
     ++token;

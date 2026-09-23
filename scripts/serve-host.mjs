@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+const port = Number(process.env.MCUI_HOST_PORT ?? 4178);
 const root = path.resolve(process.env.MCUI_HOST_DIR ?? '.cache/blockbench');
 const types = {
   '.html': 'text/html',
@@ -35,4 +36,4 @@ http
       res.end('Not found');
     }
   })
-  .listen(4178, '127.0.0.1', () => console.log('Blockbench test host: http://127.0.0.1:4178'));
+  .listen(port, '127.0.0.1', () => console.log(`Blockbench test host: http://127.0.0.1:${port}`));

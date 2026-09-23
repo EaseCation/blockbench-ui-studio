@@ -1,4 +1,4 @@
-# MC UI Studio v0.7.1
+# MC UI Studio v0.8.0
 
 面向 Minecraft 像素 UI 的独立 Blockbench 插件。Image 使用原生 Group＋内容 Cube，Frame 使用原生 Group。X/Z 表达布局、Y 高度表达显示层级；内容 Cube 的 Y 厚度为 0，仅顶面使用贴图；未安装插件也能查看标准模型和贴图。
 
@@ -129,3 +129,7 @@ npm run test:host        # 真实 Blockbench 页面集成测试
 宿主测试要求 `.cache/blockbench` 是已构建 Web 版的测试副本，或用 `MCUI_HOST_DIR` 指向测试宿主。默认使用系统 Chrome，无需用户浏览器配置目录。详见 `docs/testing.md`。
 
 设计、数据和适配策略见 `docs/implementation-plan.md` 与 `docs/architecture.md`。
+
+### 可编辑文字（整合构建）
+
+同时加载 BBModel Text Component v0.2.0 后，使用大纲「添加文字」创建文字 Image；双击进入实时文字编辑器，或在原生「文字」标签修改排版。UI 布局继续管理宽高和定位，支持百分比宽度、自动换行高度和 Stack 排列。文字内容为普通零厚度 Cube 和内嵌 PNG，卸载文字插件后仍可显示、移动和缩放成品。该能力使用 `Blockbench.mcuiStudio.contents.version === 1` 的独立扩展接口。

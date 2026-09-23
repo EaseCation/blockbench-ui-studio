@@ -684,23 +684,28 @@ export class InspectorPanels {
             ? '九宫格素材'
             : this.model?.contentKind === 'image'
               ? '图片素材'
-              : '混合素材';
+              : this.model?.contentKind === 'generated'
+                ? '文字素材'
+                : '混合素材';
       thumbnail.hidden = this.nodes.length !== 1 || !asset;
       if (asset && thumbnail.getAttribute('src') !== asset.png) thumbnail.src = asset.png;
       sourceInfo.textContent =
         this.nodes.length === 1 && asset
           ? `源图 ${asset.width}×${asset.height}`
           : `${this.nodes.length} 项 · 素材分别保留`;
-      paint.textContent = hasAppearance(n?.appearance)
-        ? '合成后绘画'
-        : n?.content?.kind === 'paint'
-          ? '绘画'
-          : '编辑源图';
+      paint.textContent =
+        n?.content?.kind === 'generated'
+          ? '编辑文字'
+          : hasAppearance(n?.appearance)
+            ? '合成后绘画'
+            : n?.content?.kind === 'paint'
+              ? '绘画'
+              : '编辑源图';
       paint.title = hasAppearance(n?.appearance)
         ? '先合并填充与描边为像素，再进入绘画；可撤销并恢复原始来源'
         : '进入原生绘画或源图编辑';
       preview.textContent = this.model?.contentKind === 'nine-slice' ? '编辑切片' : '预览裁切';
-      preview.hidden = this.model?.contentKind === 'paint';
+      preview.hidden = ['paint', 'generated'].includes(this.model?.contentKind ?? '');
       for (const b of [paint, preview, replace, makeNine, restore])
         b.disabled = this.nodes.length !== 1 || !this.context.enabled();
       image.hidden = this.model?.contentKind !== 'image';
@@ -719,7 +724,8 @@ export class InspectorPanels {
       nine.hidden = this.model?.contentKind !== 'nine-slice';
       const v = this.value<number[]>('nine_insets');
       insets.textContent = v ? `上 ${v[0]} · 右 ${v[1]} · 下 ${v[2]} · 左 ${v[3]}` : '四边参数混合';
-      makeNine.hidden = this.nodes.length !== 1 || n?.content?.kind === 'nine-slice';
+      makeNine.hidden =
+        this.nodes.length !== 1 || ['nine-slice', 'generated'].includes(n?.content?.kind ?? '');
       restore.hidden = this.nodes.length !== 1 || !n?.originalContent;
     });
   }
@@ -794,6 +800,8 @@ export class InspectorPanels {
       this.context,
       '尺寸变化策略',
       {
+        'text-reflow': '文字 · 调整文本框并重排',
+        'text-scale': '文字 · 缩放成品',
         preserve: '保留贴图',
         extend: '跟随显示尺寸 · 扩展画布',
         scale: '跟随显示尺寸 · 重采样',
@@ -815,20 +823,25 @@ export class InspectorPanels {
     this.updates.push(() => {
       const kind = this.model?.contentKind;
       for (const option of Array.from(mode.options).slice(1))
-        option.hidden = !(kind === 'nine-slice'
-          ? option.value === 'nine'
-          : option.value === 'preserve' ||
-            (kind === 'paint'
-              ? ['extend', 'scale'].includes(option.value)
-              : kind === 'image' && option.value === 'image'));
-      mode.disabled = !this.context.enabled() || !kind || kind === 'nine-slice';
+        option.hidden = !(kind === 'generated'
+          ? ['text-reflow', 'text-scale'].includes(option.value)
+          : kind === 'nine-slice'
+            ? option.value === 'nine'
+            : option.value === 'preserve' ||
+              (kind === 'paint'
+                ? ['extend', 'scale'].includes(option.value)
+                : kind === 'image' && option.value === 'image'));
+      mode.disabled =
+        !this.context.enabled() || !kind || ['nine-slice', 'generated'].includes(kind);
       summary.textContent = this.model?.resolution ?? '';
       tip.textContent =
-        this.model?.strategy === 'preserve'
-          ? '改变显示大小不会重采样贴图或改变 UV。'
-          : this.model?.strategy === 'nine'
-            ? '按目标尺寸生成，保持源图四角。'
-            : '';
+        kind === 'generated'
+          ? '在「文字」标签中设置重排／缩放和栅格密度；缺少文字插件时仅使用保存的成品。'
+          : this.model?.strategy === 'preserve'
+            ? '改变显示大小不会重采样贴图或改变 UV。'
+            : this.model?.strategy === 'nine'
+              ? '按目标尺寸生成，保持源图四角。'
+              : '';
       flatten.hidden =
         this.nodes.length !== 1 || (kind === 'paint' && !hasAppearance(this.nodes[0]?.appearance));
       flatten.disabled = !this.context.enabled();

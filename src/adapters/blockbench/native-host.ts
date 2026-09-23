@@ -1,3 +1,5 @@
+import { contentProviders } from '../../application/content';
+import { hydrateContents, persistContents } from './content-carrier';
 import type { HostPort, NativeSnapshot, NativeSceneSnapshot } from '../../application/ports';
 import { clone, validateDocument, topSelection } from '../../domain/document';
 import type { Id, Pixels, ResolvedScene, UiDocument } from '../../domain/types';
@@ -30,7 +32,9 @@ export class NativeHost implements HostPort {
     if (!data) return null;
     if (data.schemaVersion !== 1) throw new Error('插件数据版本较新，保留原生内容并暂停增强编辑');
     this.sources = clone(data.nativeSources ?? {});
-    return clone(validateDocument(data.document));
+    const doc = clone(validateDocument(data.document));
+    hydrateContents(doc, this.project);
+    return doc;
   }
   async prepareSources() {
     for (const [id, value] of Object.entries(this.sources)) {
@@ -63,7 +67,7 @@ export class NativeHost implements HostPort {
     );
     this.project.unhandled_root_fields[METADATA_KEY] = {
       schemaVersion: 1,
-      document: clone(doc),
+      document: persistContents(doc, this.project),
       nativeSources: clone(retainedSources),
     } satisfies Carrier;
   }
@@ -265,6 +269,16 @@ export class NativeHost implements HostPort {
           id,
           containerId: e.uuid,
           surfaceId: surface?.uuid,
+          generatedPixels:
+            !n && surface
+              ? ([...contentProviders]
+                  .filter(([key]) => surface[key] && !surface[key].inactive)
+                  .map(([, p]) => p.fallback?.(surface.uuid))
+                  .find((p) => !!p) ?? undefined)
+              : undefined,
+          generated: [...contentProviders.keys()]
+            .filter((key) => surface?.[key] && !surface[key].inactive)
+            .map((provider) => ({ provider, data: clone(surface[provider]) }))[0],
           kind: image ? 'image' : 'frame',
           sourceId: e[SOURCE_MARKER] || undefined,
           rect,

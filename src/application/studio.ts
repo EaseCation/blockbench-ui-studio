@@ -1,3 +1,4 @@
+import { contentProviders, type ContentData } from './content';
 import {
   clone,
   descendants,
@@ -36,7 +37,7 @@ export class Studio {
     validateDocument(doc);
     this.state = {
       doc,
-      scene: layout(doc),
+      scene: this.resolveLayout(doc),
       selection: [],
       interaction: 'figma',
       view: '2d',
@@ -66,6 +67,7 @@ export class Studio {
         }),
       );
       if (this.disposed) return;
+      await this.prepareContents();
       if (reconcile) this.reconcile(true);
       this.captureNative();
     } catch (e) {
@@ -102,6 +104,59 @@ export class Studio {
     this.pixelsCache.set(this.assetKey(id, revision), pixels);
     return id;
   }
+  private resolveLayout(doc: UiDocument) {
+    return layout(doc, (node, width) => {
+      const c = node.content;
+      if (c?.kind !== 'generated' || !c.data || node.suspended) return undefined;
+      const provider = contentProviders.get(c.provider);
+      if (!provider?.ready(c.data)) return undefined;
+      if (c.data.resize === 'scale') return c.logicalSize;
+      return provider.measure(c.data, width);
+    });
+  }
+  async prepareContents(doc = this.state.doc) {
+    for (const n of Object.values(doc.nodes)) {
+      for (const c of [n.content, n.originalContent])
+        if (c?.kind === 'generated' && c.data)
+          await contentProviders.get(c.provider)?.prepare(c.data);
+    }
+  }
+  createContent(provider: string, data: ContentData, name = 'Text'): Id | null {
+    const id = this.images.id();
+    const parent = this.state.selection.length === 1 ? this.state.selection[0]! : null;
+    const ok = this.execute('新增文字', (doc) => {
+      const n = createNode(id, name, 'image', { x: 0, y: 0, width: 32, height: 16 });
+      n.parent = parent;
+      n.layout.offset = { x: 8, y: 8 };
+      (parent ? doc.nodes[parent]!.children : doc.roots).push(id);
+      n.content = {
+        kind: 'generated',
+        provider,
+        data: clone(data),
+        source: this.putSource(doc, blank(1, 1)),
+        logicalSize: { width: 32, height: 16 },
+      };
+      doc.nodes[id] = n;
+      this.editContentNode(n, data, true);
+    });
+    if (ok) this.select([id]);
+    return ok ? id : null;
+  }
+  editContentNode(n: UiNode, data: ContentData, resetSize = false) {
+    if (n.content?.kind !== 'generated') throw new Error('图层不再是可编辑内容');
+    const old = n.content.data;
+    n.content.data = clone(data);
+    if (resetSize || old?.sizing !== data.sizing) {
+      n.layout.width =
+        data.sizing === 'auto' ? { kind: 'hug' } : fixed(Number(data.box_width) || n.rect.width);
+      n.layout.height =
+        data.sizing === 'fixed' ? fixed(Number(data.box_height) || n.rect.height) : { kind: 'hug' };
+    }
+    if (old?.resize !== data.resize && data.resize === 'reflow') {
+      n.layout.width = fixed(n.rect.width);
+      n.layout.height = data.sizing === 'fixed' ? fixed(n.rect.height) : { kind: 'hug' };
+    }
+  }
   private calculate(doc: UiDocument) {
     const referenced = new Set(
       Object.values(doc.nodes).flatMap((n) =>
@@ -110,7 +165,7 @@ export class Studio {
     );
     for (const id of Object.keys(doc.assets)) if (!referenced.has(id)) delete doc.assets[id];
     validateDocument(doc);
-    const scene = layout(doc),
+    const scene = this.resolveLayout(doc),
       bitmaps: Record<Id, Pixels> = {},
       keys = new Map<Id, string>();
     for (const id of scene.order) {
@@ -118,6 +173,42 @@ export class Studio {
         r = scene.nodes[id]!.rect;
       n.rect = { ...r };
       if (!n.content || n.suspended) continue;
+      if (n.content.kind === 'generated') {
+        const c = n.content,
+          provider = contentProviders.get(c.provider),
+          data = c.data;
+        if (data && data.resize !== 'scale') {
+          data.sizing =
+            n.layout.width.kind === 'hug' && n.layout.height.kind === 'hug'
+              ? 'auto'
+              : n.layout.height.kind === 'hug'
+                ? 'height'
+                : 'fixed';
+          data.box_width = r.width;
+          data.box_height = r.height;
+        }
+        const ref =
+          data?.resize === 'scale' ? data.reference : { width: r.width, height: r.height };
+        const key = JSON.stringify([
+          c.provider,
+          data && provider ? provider.key(data) : null,
+          ref,
+          n.opacity,
+          n.appearance,
+        ]);
+        keys.set(id, key);
+        if (c.renderedKey !== key && data && provider?.ready(data)) {
+          const pixels = provider.render(data, r);
+          c.source = this.putSource(doc, pixels);
+          c.renderedKey = key;
+          c.logicalSize = { width: r.width, height: r.height };
+          bitmaps[id] = decorate(pixels, n.appearance, n.opacity);
+        } else if (this.renderKeys.get(id) !== key || !doc.bindings[id]?.textureId) {
+          bitmaps[id] = decorate(this.source(doc, c.source), n.appearance, n.opacity);
+          c.logicalSize = { width: r.width, height: r.height };
+        }
+        continue;
+      }
       const asset = doc.assets[n.content.source]!;
       const size = n.rasterSize ?? r;
       const key = JSON.stringify([
@@ -216,7 +307,7 @@ export class Studio {
       } finally {
         this.applying = false;
       }
-      this.state = { ...this.state, doc: previous, scene: layout(previous) };
+      this.state = { ...this.state, doc: previous, scene: this.resolveLayout(previous) };
       this.renderKeys.clear();
       this.report(error);
       return false;
@@ -259,7 +350,7 @@ export class Studio {
         if (this.gestureTransaction) this.host.commit(this.gestureLabel);
       } else {
         if (this.gestureTransaction) this.host.cancel();
-        this.state = { ...this.state, doc: original, scene: layout(original) };
+        this.state = { ...this.state, doc: original, scene: this.resolveLayout(original) };
         if (this.gestureTransaction) this.renderKeys.clear();
       }
     } finally {
@@ -272,7 +363,7 @@ export class Studio {
     const doc = this.host.read();
     if (!doc) return;
     this.renderKeys.clear();
-    this.state = { ...this.state, doc: clone(doc), scene: layout(doc) };
+    this.state = { ...this.state, doc: clone(doc), scene: this.resolveLayout(doc) };
     await this.initialize(false);
   }
   private captureNative() {
@@ -567,7 +658,13 @@ export class Studio {
       for (const id of ids) {
         const n = doc.nodes[id];
         if (n) {
-          if (preserveResolution && n.content && n.content.kind !== 'nine-slice' && !n.rasterSize)
+          if (
+            preserveResolution &&
+            n.content &&
+            n.content.kind !== 'nine-slice' &&
+            n.content.kind !== 'generated' &&
+            !n.rasterSize
+          )
             n.rasterSize = { width: n.rect.width, height: n.rect.height };
           rects[id] = mapRect(n.rect, original, target);
         }
@@ -647,6 +744,9 @@ export class Studio {
   }
   async importDocument(source: UiDocument, ids: Map<Id, Id>, parent: Id | null) {
     validateDocument(source);
+    for (const [id, resources] of Object.entries(source.contentResources ?? {}))
+      contentProviders.get(id)?.importResources?.(resources);
+    await this.prepareContents(source);
     for (const a of Object.values(source.assets))
       this.pixelsCache.set(this.assetKey(a.id, a.revision), await this.images.decode(a.png));
     if (this.disposed) return;
@@ -728,11 +828,23 @@ export class Studio {
     );
   }
   regenerate(id: Id) {
+    const content = this.state.doc.nodes[id]?.content;
+    if (
+      content?.kind === 'generated' &&
+      (!content.data || !contentProviders.get(content.provider)?.ready(content.data))
+    ) {
+      this.report('请先安装文字插件并等待字体加载');
+      return;
+    }
     this.renderKeys.delete(id);
     this.update(
       id,
       (n) => {
         delete n.suspended;
+        if (n.content?.kind === 'generated') {
+          delete n.content.renderedKey;
+          if (n.content.data) delete n.content.data.suspended;
+        }
       },
       '按规则重新生成',
     );
@@ -760,6 +872,13 @@ export class Studio {
     });
   }
   paint(id: Id) {
+    const content = this.state.doc.nodes[id]?.content;
+    if (content?.kind === 'generated') {
+      const provider = contentProviders.get(content.provider);
+      if (provider) provider.edit(id);
+      else this.report('文字插件未安装：当前仅显示保存的成品，可移动或缩放');
+      return;
+    }
     if (hasAppearance(this.state.doc.nodes[id]?.appearance)) this.flatten(id);
     const n = this.state.doc.nodes[id];
     if (!n?.content) return;
@@ -794,12 +913,19 @@ export class Studio {
       n.name = snap.name;
       n.children = [];
       n.parent = snap.parentId ?? null;
-      n.rect = { ...snap.rect };
+      n.rect = {
+        ...snap.rect,
+        width: Math.max(1, snap.rect.width),
+        height: Math.max(1, snap.rect.height),
+      };
       n.visible = snap.visible;
       n.locked = snap.locked;
       delete n.suspended;
       if (!original && n.kind === 'image') {
-        const pixels = snap.textureId ? this.host.pixels(snap.textureId) : null;
+        const pixels =
+          (snap.textureId ? this.host.pixels(snap.textureId) : null) ??
+          snap.generatedPixels ??
+          null;
         const source = this.putSource(
           doc,
           pixels ??
@@ -809,7 +935,15 @@ export class Studio {
             ),
         );
         if (pixels && snap.textureId) this.host.retainPaintLayers(source, snap.textureId);
-        n.content = { kind: 'paint', source, mode: 'extend', origin: { x: 0, y: 0 } };
+        n.content =
+          snap.generated && !snap.unsupported
+            ? {
+                kind: 'generated',
+                source,
+                ...clone(snap.generated),
+                logicalSize: { width: n.rect.width, height: n.rect.height },
+              }
+            : { kind: 'paint', source, mode: 'extend', origin: { x: 0, y: 0 } };
       }
       if (onOpen || snap.unsupported)
         n.suspended = snap.unsupported ?? '发现原生新增对象，已保留原生内容';
@@ -853,12 +987,20 @@ export class Studio {
       n.visible = snap.visible;
       n.locked = snap.locked;
       if (snap.unsupported) {
-        n.rect = { ...snap.rect };
+        n.rect = {
+          ...snap.rect,
+          width: Math.max(1, snap.rect.width),
+          height: Math.max(1, snap.rect.height),
+        };
         n.suspended = snap.unsupported;
         continue;
       }
       if (onOpen) {
-        n.rect = { ...snap.rect };
+        n.rect = {
+          ...snap.rect,
+          width: Math.max(1, snap.rect.width),
+          height: Math.max(1, snap.rect.height),
+        };
         n.suspended = '检测到未安装插件时的修改，保留当前结果；可采用结果或重新生成';
         continue;
       }
@@ -908,7 +1050,7 @@ export class Studio {
     if (!changed) return;
     if (onOpen) {
       try {
-        this.state = { ...this.state, doc, scene: layout(doc) };
+        this.state = { ...this.state, doc, scene: this.resolveLayout(doc) };
         this.host.write(doc);
         this.emit();
       } catch (error) {

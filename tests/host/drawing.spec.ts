@@ -6,7 +6,7 @@ async function start(page: Page) {
   await page.route(/https:\/\/(cdn.jsdelivr.net|blckbn.ch).*plugins.*json/, (r) =>
     r.fulfill({ json: {} }),
   );
-  await page.goto('http://127.0.0.1:4178');
+  await page.goto(`http://127.0.0.1:${process.env.MCUI_HOST_PORT ?? '4178'}`);
   await page.waitForFunction(() => !!window.Blockbench?.setup_successful);
   await page.evaluate(() => {
     window.Plugins.registered.mcui_studio = new window.Blockbench.Plugin('mcui_studio');

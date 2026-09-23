@@ -57,7 +57,16 @@ export interface PaintRecipe {
   mode: 'extend' | 'scale';
   origin: Point;
 }
-export type RenderRecipe = ImageRecipe | NineSliceRecipe | PaintRecipe;
+export interface GeneratedRecipe {
+  kind: 'generated';
+  source: Id;
+  provider: string;
+  renderedKey?: string;
+  /** Draft/cache only: persisted on the native content carrier, never in the UI document. */
+  data?: Record<string, unknown>;
+  logicalSize: { width: number; height: number };
+}
+export type RenderRecipe = ImageRecipe | NineSliceRecipe | PaintRecipe | GeneratedRecipe;
 export interface Appearance {
   fill: 'none' | 'solid' | 'linear';
   color: string;
@@ -116,6 +125,7 @@ export interface UiDocument {
   nodes: Record<Id, UiNode>;
   assets: Record<Id, SourceAsset>;
   bindings: Record<Id, NativeBinding>;
+  contentResources?: Record<string, unknown>;
 }
 export interface Pixels {
   width: number;

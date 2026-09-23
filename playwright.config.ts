@@ -13,8 +13,8 @@ export default defineConfig({
   },
   webServer: {
     command: 'node scripts/serve-host.mjs',
-    url: 'http://127.0.0.1:4178',
-    reuseExistingServer: true,
+    url: `http://127.0.0.1:${process.env.MCUI_HOST_PORT ?? '4178'}`,
+    reuseExistingServer: !process.env.MCUI_HOST_PORT,
     timeout: 30000,
   },
 });

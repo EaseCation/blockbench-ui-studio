@@ -154,3 +154,43 @@ describe('布局编辑保持显示位置', () => {
     expect(JSON.stringify(doc)).toBe(before);
   });
 });
+
+describe('可测量内容', () => {
+  function textFixture() {
+    const d = fixture();
+    const text = d.nodes.a!;
+    d.nodes.p!.frame!.direction = 'column';
+    d.nodes.p!.layout.height = { kind: 'hug' };
+    text.content = {
+      kind: 'generated',
+      provider: 'text',
+      source: 's',
+      logicalSize: { width: 40, height: 10 },
+    };
+    text.layout.width = { kind: 'expression', percent: 1, pixels: -1 };
+    text.layout.height = { kind: 'hug' };
+    return d;
+  }
+  const measure = (_n: unknown, width = 200) => ({ width, height: Math.ceil(200 / width) * 10 });
+  it('宽度约束先参与测量，包裹高度影响 Stack 后续子项和父高度', () => {
+    const d = textFixture();
+    let s = layout(d, measure);
+    expect(s.nodes.a!.rect.height).toBe(20);
+    expect(s.nodes.b!.rect.y).toBe(20);
+    d.nodes.p!.layout.width = fixed(51);
+    s = layout(d, measure);
+    expect(s.nodes.a!.rect.height).toBe(40);
+    expect(s.nodes.b!.rect.y).toBe(40);
+    expect(s.nodes.p!.rect.height).toBe(50);
+  });
+  it('缺少提供者时使用已保存的逻辑尺寸，而非高清贴图尺寸', () => {
+    const d = textFixture();
+    d.assets.s = { id: 's', width: 160, height: 40, png: '', revision: 1 };
+    expect(layout(d).nodes.a!.rect.height).toBe(10);
+  });
+  it('文字测量不能绕过父子 Hug / 百分比循环检查', () => {
+    const d = textFixture();
+    d.nodes.p!.layout.width = { kind: 'hug' };
+    expect(() => layout(d, measure)).toThrow(/循环/);
+  });
+});

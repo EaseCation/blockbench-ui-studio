@@ -16,6 +16,8 @@ export interface NativeSnapshot {
   surfaceId?: string;
   sourceId?: string;
   children?: Id[];
+  generatedPixels?: Pixels;
+  generated?: { provider: string; data: Record<string, unknown> };
   siblingIndex?: number;
 }
 export interface NativeSceneSnapshot {

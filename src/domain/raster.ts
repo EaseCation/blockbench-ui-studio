@@ -41,6 +41,7 @@ export function renderPixels(
   height: number,
   opacity = 1,
 ): Pixels {
+  if (recipe.kind === 'generated') return { ...src, data: src.data.slice() };
   const dst = blank(width, height);
   if (recipe.kind === 'nine-slice') {
     const [t, r, b, l] = recipe.insets;
