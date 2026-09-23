@@ -471,11 +471,7 @@ export class ViewportController {
         parent = doc.nodes[parent]?.parent ?? null;
       }
       const label =
-        n.kind === 'frame' &&
-        (!n.parent ||
-          selection.includes(id) ||
-          this.hover === id ||
-          this.dropTarget?.parentId === id)
+        n.kind === 'frame' && !n.parent
           ? {
               x: rect.x + 2,
               y: rect.y - 22,
