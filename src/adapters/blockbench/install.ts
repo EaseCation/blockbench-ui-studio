@@ -1,4 +1,5 @@
 import { Studio } from '../../application/studio';
+import { OutlinerToolbar } from './outliner-toolbar';
 import { clone, descendants, topSelection } from '../../domain/document';
 import { createNode, fixed } from '../../domain/types';
 import type { UiDocument } from '../../domain/types';
@@ -518,6 +519,8 @@ export function install(bb: HostRuntime) {
       bb.BarItems.add_element.side_menu.removeAction(action);
     });
   }
+  const outlinerToolbar = new OutlinerToolbar(bb, () => current);
+  life.add(() => outlinerToolbar.dispose());
   for (const id of ['mcui_source_apply', 'mcui_source_cancel']) {
     const action = byId(id);
     bb.Toolbars.brush.add(action);
@@ -724,7 +727,7 @@ export function install(bb: HostRuntime) {
   );
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.7.0',
+    version: '0.7.1',
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,

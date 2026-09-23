@@ -30,6 +30,7 @@ export interface HostRuntime {
   Tool: HostObject;
   Keybind: HostObject;
   MenuBar: HostObject;
+  Menu: HostObject;
   Toolbox: HostObject;
   BarItems: HostObject;
   SharedActions: HostObject;

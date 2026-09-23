@@ -1,3 +1,14 @@
+# v0.7.1 大纲工具栏验证
+
+验证日期：2026-09-23。原仓库工作区，独立 Blockbench 5.2.1 Web 宿主／Chrome／软件 WebGL。
+
+- `npm run check` 通过：业务依赖边界、TypeScript、当前工作区 68 项单元测试与构建。
+- `npm run test:host -- tests/host/outliner-toolbar.spec.ts --output=.cache/outliner-test-results`：2 项真实宿主测试通过。覆盖 Frame/Image 首位、创建嵌套、三个点菜单、原生新增分组、原生结构显示／隐藏、不新增查看历史、3D／绘画／普通项目恢复、用户大纲排列持久化保持，以及菜单打开时卸载。
+- 实际查看 `.cache/mcui-outliner-2d.png` 与 `.cache/mcui-outliner-menu.png`；工具栏和菜单显示正确。
+- 本轮文件格式与 `git diff --check` 通过。未更改同时开发的文字组件实现；本轮没有声明已验证文字组件功能。
+
+---
+
 # v0.7.0 验证记录
 
 验证日期：2026-09-23。原仓库构建，隔离 Blockbench 5.2.1 Web 宿主／Chrome／软件 WebGL；未安装到用户的 Blockbench 配置。
