@@ -4,6 +4,7 @@ import { contentProviders } from '../../application/content';
 import { Studio } from '../../application/studio';
 import { OutlinerToolbar } from './outliner-toolbar';
 import { WorkspaceLayout } from './workspace-layout';
+import { installShortcuts } from './shortcuts';
 import { clone, descendants, topSelection } from '../../domain/document';
 import { createNode, fixed } from '../../domain/types';
 import type { UiDocument } from '../../domain/types';
@@ -560,12 +561,22 @@ export function install(bb: HostRuntime) {
       ctor.prototype.menu.addAction(action);
       life.add(() => ctor.prototype.menu.removeAction(action));
     }
+  life.add(
+    installShortcuts(
+      bb,
+      () => current,
+      () => viewport,
+      () => properties.showLayout(),
+    ),
+  );
   const commandActive = () =>
     !!current &&
     !focused() &&
     !bb.open_interface &&
     bb.Modes.edit &&
-    ['preview', 'outliner', 'element', 'transform'].includes(bb.Prop.active_panel);
+    ['preview', 'outliner', 'element', 'transform', 'mcui_layout', 'mcui_content'].includes(
+      bb.Prop.active_panel,
+    );
   life.add(
     bb.SharedActions.add('copy', {
       subject: 'mcui',

@@ -90,3 +90,7 @@ WorkspaceLayout 独立封装原生 Panel 的停靠与折叠。仅在 MC UI + Fig
 进入前保存原生 edit 模式的面板位置对象，记录本轮实际改变的字段；退出时只恢复这些字段，保留其它面板与标签状态。原生 moveTo 可能改变原侧栏可伸缩面板的 fixed_height，因此一并追踪其变化。选区变化不重新应用布局，手动展开 UV 后继续选择不会再次折叠。绘画／项目切换在 unselect 事件中先恢复 edit 布局，避免把 edit 状态写进 paint 模式。
 
 PropertyBridge 在属性标签集合变化后补齐 updateInterfacePanels，令原生侧栏顺序与配置同步，而非只更新单个属性宿主。此行为也覆盖原生交互样式。
+
+## 上下文快捷键
+
+shortcuts 适配器注册原生 Action/Keybind，读取用户当前键位并在允许的二维编辑上下文通过 press_key.capture 阻止宿主重复执行；卸载清理原生命令和菜单。layout-commands 为纯应用逻辑，Frame 原地启用、普通选区包裹、移除时保留边界均走现有单次事务。视图聚焦不写文档。

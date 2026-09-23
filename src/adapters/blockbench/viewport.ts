@@ -241,11 +241,19 @@ export class ViewportController {
     this.syncTool();
     this.draw();
   }
-  fit() {
+  shortcutsAvailable() {
+    return (
+      this.drawingContext() &&
+      this.pointerId === null &&
+      !this.drawing.request &&
+      !this.bb.Preview.selected?.selection?.sr_move_f
+    );
+  }
+  fit(selectionOnly = false) {
     const p = this.bb.Preview.selected;
     const rect = bounds(
       Object.values(this.studio.state.scene.nodes)
-        .filter((n) => n.visible)
+        .filter((n) => n.visible && (!selectionOnly || this.studio.state.selection.includes(n.id)))
         .map((n) => n.rect),
     );
     if (!rect || !p.isOrtho) return;
