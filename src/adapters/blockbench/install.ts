@@ -1,5 +1,6 @@
 import { Studio } from '../../application/studio';
 import { OutlinerToolbar } from './outliner-toolbar';
+import { WorkspaceLayout } from './workspace-layout';
 import { clone, descendants, topSelection } from '../../domain/document';
 import { createNode, fixed } from '../../domain/types';
 import type { UiDocument } from '../../domain/types';
@@ -48,6 +49,8 @@ export function install(bb: HostRuntime) {
   life.add(() => outlinerView.dispose());
   const properties = new PropertyBridge(bb, () => get()?.app ?? null);
   life.add(() => properties.dispose());
+  const workspaceLayout = new WorkspaceLayout(bb, () => (get()?.app === current ? current : null));
+  life.add(() => workspaceLayout.dispose());
   let interactionSelect: HostObject, viewSelect: HostObject, autoPlaceSelect: HostObject;
   const preferences = () => {
     try {
@@ -109,6 +112,7 @@ export function install(bb: HostRuntime) {
       viewSelect?.set(current.state.view);
       properties.refresh();
       bb.updateInterface();
+      workspaceLayout.update();
     } catch (e) {
       bb.Blockbench.showQuickMessage(`MCUI: ${e instanceof Error ? e.message : String(e)}`, 6000);
     }

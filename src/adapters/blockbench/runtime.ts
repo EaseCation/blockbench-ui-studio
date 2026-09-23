@@ -41,6 +41,7 @@ export interface HostRuntime {
   newProject: HostObject;
   updateSelection: HostObject;
   updateInterface: HostObject;
+  updateInterfacePanels: HostObject;
   unselectAllElements: HostObject;
   guid: HostObject;
   Property: HostObject;

@@ -74,3 +74,11 @@ application/inspector 提供不依赖 DOM 的混合值、摘要、适用上下�
 ## 2D 大纲工具栏
 
 OutlinerToolbar 仅在 MC UI 的顶视正交编辑态，通过工具栏局部 CSS 排序和隐藏按钮，并为 outliner 实例设置原生 Menu。Toolbar.children、Action.condition、保存的工具栏排列与宿主原型均不改动。模式／项目切换和卸载移除局部样式、恢复原菜单；原生新增子菜单过滤本插件已提供的操作，避免 Action.menu_node 在同一菜单树重复出现。
+
+## Figma 工作区停靠
+
+WorkspaceLayout 独立封装原生 Panel 的停靠与折叠。仅在 MC UI + Figma + edit 状态转换时应用：大纲移到左栏首位、属性宿主移到右栏、UV/纹理宿主折叠。使用 moveTo/customizePosition/fold/updateInterfacePanels，不改宿主原型、不手动搬运未知面板 DOM。
+
+进入前保存原生 edit 模式的面板位置对象，记录本轮实际改变的字段；退出时只恢复这些字段，保留其它面板与标签状态。原生 moveTo 可能改变原侧栏可伸缩面板的 fixed_height，因此一并追踪其变化。选区变化不重新应用布局，手动展开 UV 后继续选择不会再次折叠。绘画／项目切换在 unselect 事件中先恢复 edit 布局，避免把 edit 状态写进 paint 模式。
+
+PropertyBridge 在属性标签集合变化后补齐 updateInterfacePanels，令原生侧栏顺序与配置同步，而非只更新单个属性宿主。此行为也覆盖原生交互样式。
