@@ -94,3 +94,9 @@ PropertyBridge 在属性标签集合变化后补齐 updateInterfacePanels，令�
 ## 上下文快捷键
 
 shortcuts 适配器注册原生 Action/Keybind，读取用户当前键位并在允许的二维编辑上下文通过 press_key.capture 阻止宿主重复执行；卸载清理原生命令和菜单。layout-commands 为纯应用逻辑，Frame 原地启用、普通选区包裹、移除时保留边界均走现有单次事务。视图聚焦不写文档。
+
+## 数值输入交互
+
+stepExpression 纯数据转换保留百分比，input-step 与 input-scrub 适配器统一键盘步进和指针状态；后者处理局部预览、速度档位、捕获、取消及生命周期。InspectorPanels 的写入在拖拽期间转到 Studio.previewGesture；元素页 PairDraft 使用同一应用事务提交，避免原生中间值回读将百分比还原为固定值。显式原生 Property 接口仍保留。
+
+预览对话框复用相同输入手势但只改本地 form，确认才写文档。宿主项目离开事件发生时全局 Project 可能已清空；NativeHost.cancel 使用原项目 Undo，并在非活动状态通过原生 whenNextOpen 回调恢复，避免向下一项目回放撤销。

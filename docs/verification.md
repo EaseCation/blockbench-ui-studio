@@ -1,3 +1,18 @@
+# v0.8.1 数值输入交互验证
+
+2026-09-23。参考 Figma 官方 Scrub fields 后实现标签拖动与 Option/Alt 输入框拖动，以及统一 ↑/↓ 数值步进。
+
+- `npm run check` 通过：依赖隔离、TypeScript、68 项单元测试、构建。
+- `MCUI_HOST_PORT=4193 npm run test:host -- --output=.cache/numeric-all-tests`：91 项宿主测试全部通过。
+- 新增 11 项覆盖元素/布局页宽高坐标，百分比像素偏移，单轴多选，空白/错误/Fill/最小值保护，min/max、gap、padding、stroke、nine-slice；标签/Alt 拖动实时预览与单次撤销，速度档位、失焦/Escape/切项目取消，像素恢复及预览对话框草稿确认。
+- 本轮修复元素页连续编辑后百分比被原生回读变为固定值的问题，双轴输入通过共享应用事务提交。原生 Property 接入继续可用。
+- 原生 Project 离开事件的 Undo 取消使用项目自身的 whenNextOpen 恢复钩子，跨项目回归通过。
+- 格式与差异检查通过。全量回归后仅更新版本标识至 0.8.1 并重新构建，功能代码不变。
+
+验证使用独立 Blockbench 5.2.1 Web 宿主/Chrome 软件 WebGL。当前拖拽为屏幕内指针捕获，未实现 Figma 跨屏边缘无限拖动；真实触控板手感未用自动化结果替代。
+
+---
+
 # 快捷键验证
 
 2026-09-23：核实 Figma 官方文档并接入 Shift+A、Option/Alt+Shift+A、Shift+1/2；布局和内容面板后的复制/删除继续走逻辑图层命令。

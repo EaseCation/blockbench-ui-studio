@@ -37,3 +37,20 @@ export function resizeRule(rule: SizeRule, delta: number, size: number): SizeRul
     ? { ...rule, pixels: rule.pixels + delta }
     : { kind: 'fixed', value: size };
 }
+
+/** Input nudging changes pixels, never the relative percentage or a dynamic sizing rule. */
+export function stepExpression(text: string, delta: number, kind: 'size' | 'offset'): string {
+  const add = (value: number) => Math.round((value + delta) * 1e6) / 1e6;
+  if (kind === 'offset') {
+    const value = parseOffset(text);
+    return formatOffset(value.percent, add(value.pixels));
+  }
+  const rule = parseSize(text);
+  if (rule.kind === 'fill' || rule.kind === 'hug')
+    throw new Error('填充／包裹由布局计算，请先切换为固定或百分比尺寸');
+  return formatSize(
+    rule.kind === 'fixed'
+      ? { kind: 'fixed', value: Math.max(1, add(rule.value)) }
+      : { ...rule, pixels: add(rule.pixels) },
+  );
+}

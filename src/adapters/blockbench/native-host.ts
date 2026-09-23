@@ -100,7 +100,17 @@ export class NativeHost implements HostPort {
     this.bb.Undo.finishEdit(label, this.all());
   }
   cancel() {
-    this.bb.Undo.cancelEdit(true);
+    const undo = this.project.undo;
+    if (this.active()) undo.cancelEdit(true);
+    else {
+      // Blockbench clears Project before unselect_mode/project. Restore through its own
+      // deferred-open hook, never through the next project's global Undo getter.
+      const save = undo.current_save;
+      if (save)
+        this.project.whenNextOpen(() => {
+          if (undo.current_save === save) undo.cancelEdit(true);
+        });
+    }
   }
   expandNativeUndo(event: HostObject) {
     const save = this.bb.Undo.current_save;

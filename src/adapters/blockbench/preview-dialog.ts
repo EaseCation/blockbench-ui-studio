@@ -4,6 +4,8 @@ import { clone } from '../../domain/document';
 import { decorate, renderPixels } from '../../domain/raster';
 import { imagePort } from '../../platform/browser/images';
 import type { HostRuntime } from './runtime';
+import { bindScrub, scrubLabel } from './input-scrub';
+import { inputStep, stepNumber } from './input-step';
 
 export async function showContentPreview(
   bb: HostRuntime,
@@ -14,6 +16,10 @@ export async function showContentPreview(
   const project = bb.Project,
     initial = app.state.doc;
   const valid = () => active() && bb.Project === project;
+  const cleanups: (() => void)[] = [];
+  const cleanup = () => {
+    for (const dispose of cleanups.splice(0)) dispose();
+  };
   const node = app.state.doc.nodes[id];
   if (!node?.content) return;
   const source = app.state.doc.assets[node.content.source]!;
@@ -165,6 +171,7 @@ export async function showContentPreview(
     form,
     lines: [canvas],
     onFormChange: paint,
+    onClose: cleanup,
     onConfirm(values: any) {
       if (
         !valid() ||
@@ -180,8 +187,57 @@ export async function showContentPreview(
     },
   });
   dialog.show();
+  for (const key of ['insets', 'scale', 'offset']) {
+    const field = dialog.form.form_data[key];
+    if (!field) continue;
+    for (const input of field.bar.querySelectorAll('input') as NodeListOf<HTMLInputElement>) {
+      const step = (value: string, delta: number) =>
+        stepNumber(value, delta, key === 'insets' ? 0 : key === 'scale' ? 0.01 : undefined);
+      const apply = (value: string) => {
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const arrow = (e: KeyboardEvent) => {
+        const delta = inputStep(e);
+        if (delta === null) return;
+        try {
+          apply(step(input.value, delta));
+        } catch (error) {
+          bb.Blockbench.showQuickMessage(String(error), 4000);
+        }
+      };
+      input.addEventListener('keydown', arrow);
+      cleanups.push(() => input.removeEventListener('keydown', arrow));
+      cleanups.push(
+        bindScrub(input, {
+          key: () => project.uuid,
+          enabled: () => valid() && bb.Dialog.open === dialog,
+          step,
+          refresh: () => {},
+          report: (error) => bb.Blockbench.showQuickMessage(String(error), 4000),
+          begin: () => {
+            const original = input.value;
+            return {
+              preview: (value) => {
+                apply(value);
+                return true;
+              },
+              finish: (commit) => {
+                if (!commit) apply(original);
+              },
+            };
+          },
+        }),
+      );
+      if (key === 'scale') {
+        const label = field.bar.querySelector('label');
+        if (label) scrubLabel(input, label);
+      }
+    }
+  }
   paint(dialog.getFormResult());
   return () => {
+    cleanup();
     if (bb.Dialog.open === dialog) dialog.cancel();
     dialog.delete();
   };

@@ -1,4 +1,7 @@
 import type { Studio } from '../../application/studio';
+import { stepExpression } from '../../domain/expression';
+import { stepNumber } from './input-step';
+import { scrubLabel } from './input-scrub';
 import {
   anchorLabel,
   common,
@@ -27,6 +30,7 @@ type Section = 'size' | 'frame' | 'position' | 'source' | 'fill' | 'stroke' | 'r
 
 /** Registered native forms compose small stable controls; all edits use the existing transaction. */
 export class InspectorPanels {
+  private scrubApp?: Studio;
   readonly panels: HostObject[] = [];
   private life = new Disposables();
   private cleanup: (() => void)[] = [];
@@ -56,6 +60,17 @@ export class InspectorPanels {
       /* Missing or malformed local preferences use defaults. */
     }
     this.context = {
+      beginScrub: () => {
+        const app = this.current();
+        if (!app || app.state.busy) throw new Error('项目暂不可编辑');
+        this.scrubApp = app;
+        app.beginGesture('拖动调整 UI 数值');
+        return (commit) => {
+          this.scrubApp = undefined;
+          app.endGesture(commit);
+          this.refresh();
+        };
+      },
       key: () =>
         this.current()?.state.doc.id +
         ':' +
@@ -206,7 +221,11 @@ export class InspectorPanels {
       }
     };
     app.validateChange(change);
-    if (!app.execute('修改 ' + (field?.label ?? 'UI 属性'), change))
+    if (
+      !(this.scrubApp === app
+        ? app.previewGesture(change)
+        : app.execute('修改 ' + (field?.label ?? 'UI 属性'), change))
+    )
       throw new Error(app.state.error ?? '修改失败');
     this.refresh();
   }
@@ -243,6 +262,8 @@ export class InspectorPanels {
   private cell(root: HTMLElement, label: string, control: HTMLElement) {
     const c = el('label', 'mcui-inspector-cell');
     c.append(el('span', '', label), control);
+    if (control instanceof HTMLInputElement)
+      scrubLabel(control, c.firstElementChild as HTMLElement);
     root.append(c);
     return c;
   }
@@ -309,7 +330,15 @@ export class InspectorPanels {
           values.changedAxis = i;
           this.commit(id, values);
         },
-        { hint: f.description, number: id === 'image_offset', disabled },
+        {
+          hint: `${f.description ?? ''} ↑/↓ 调整 1px，百分比保持不变。`,
+          number: id === 'image_offset',
+          disabled,
+          step:
+            id === 'image_offset'
+              ? undefined
+              : (value, delta) => stepExpression(value, delta, id === 'size' ? 'size' : 'offset'),
+        },
       );
       this.cell(pair, label, control);
     });
@@ -373,7 +402,10 @@ export class InspectorPanels {
         name!,
         () => this.value(key!),
         (v) => this.commit(key!, v),
-        { hint: '正数或留空表示不限' },
+        {
+          hint: '正数或留空表示不限；↑/↓ 调整 1px',
+          step: (value, delta) => stepNumber(value, delta, 1),
+        },
       );
       this.cell(max, key === 'maxWidth' ? '最大 W' : 'H', node);
     }

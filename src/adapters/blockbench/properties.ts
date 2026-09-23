@@ -1,5 +1,8 @@
 import { fields as all, type Field } from './property-fields';
 import { InspectorPanels } from './inspector-panels';
+import { stepExpression } from '../../domain/expression';
+import { inputStep } from './input-step';
+import { bindScrub, scrubLabel, cancelScrubs } from './input-scrub';
 import type { Studio } from '../../application/studio';
 import type { Id, UiDocument, UiNode } from '../../domain/types';
 import { topSelection } from '../../domain/document';
@@ -32,6 +35,9 @@ export class PropertyBridge {
     readonly bb: HostRuntime,
     readonly current: () => Studio | null,
   ) {
+    for (const event of ['unselect_project', 'unselect_mode'])
+      this.life.add(bb.Blockbench.on(event, cancelScrubs));
+    this.life.add(cancelScrubs);
     this.registerDraft();
     for (const [type, ctor] of [
       ['cube', bb.Cube],
@@ -288,6 +294,7 @@ export class PropertyBridge {
       }
     }
     class PairDraft extends Base {
+      scrubCleanup: (() => void)[] = [];
       inputs: HTMLInputElement[] = [];
       committed = ['0px', '0px'];
       changedAxis: number | undefined;
@@ -335,6 +342,43 @@ export class PropertyBridge {
           );
           input.setAttribute('title', axis.toUpperCase());
           this.inputs.push(input);
+          const kind = axis === 'w' || axis === 'h' ? 'size' : 'offset';
+          const field = all.find((f) => this.id.endsWith('__' + FIELD_PREFIX + f.id))!;
+          this.scrubCleanup.push(
+            bindScrub(input, {
+              key: () => bridge.current()?.state.doc.id + ':' + this.key(),
+              enabled: () =>
+                !!bridge.current() && !bridge.current()?.state.busy && !!bridge.bb.Modes.edit,
+              step: (value, delta) => stepExpression(value, delta, kind),
+              report: (error) =>
+                bridge.bb.Blockbench.showQuickMessage(
+                  String(error instanceof Error ? error.message : error),
+                  4000,
+                ),
+              refresh: () => bridge.refresh(false),
+              begin: () => {
+                const app = bridge.current()!,
+                  ids = bridge.targets().map((n) => n.id),
+                  index = this.inputs.indexOf(input);
+                this.dirty = false;
+                app.beginGesture('拖动调整 UI 数值');
+                return {
+                  preview: (value) =>
+                    app.previewGesture((doc) => {
+                      const values: any = [0, 0];
+                      values[index] = value;
+                      values.changedAxis = index;
+                      for (const id of ids) field.write!(doc.nodes[id]!, values, doc);
+                    }) === true,
+                  finish: (commit) => {
+                    app.endGesture(commit);
+                    bridge.refresh(false);
+                  },
+                };
+              },
+            }),
+          );
+          scrubLabel(input, label);
           input.onfocus = () => {
             this.selection = this.key();
           };
@@ -345,6 +389,30 @@ export class PropertyBridge {
           input.onchange = () => this.commit();
           input.onblur = () => this.commit();
           input.onkeydown = (e: KeyboardEvent) => {
+            const delta = inputStep(e);
+            if (delta !== null) {
+              if (input.disabled || input.readOnly) return;
+              if (this.selection !== this.key()) {
+                this.dirty = false;
+                this.setValue(this.committed);
+                return;
+              }
+              try {
+                const kind = axis === 'w' || axis === 'h' ? 'size' : 'offset';
+                const next = stepExpression(input.value, delta, kind);
+                if (next === input.value) return;
+                input.value = next;
+                this.dirty = true;
+                this.commit(this.inputs.indexOf(input));
+              } catch (error) {
+                input.setAttribute('aria-invalid', 'true');
+                bridge.bb.Blockbench.showQuickMessage(
+                  String(error instanceof Error ? error.message : error),
+                  4000,
+                );
+              }
+              return;
+            }
             if (e.key === 'Enter') {
               e.preventDefault();
               e.stopPropagation();
@@ -359,24 +427,32 @@ export class PropertyBridge {
           };
         }
       }
-      commit() {
+      commit(axis?: number) {
         if (!this.dirty) return;
         if (this.selection !== this.key()) {
           this.dirty = false;
           this.setValue(this.committed);
           return;
         }
-        const values = this.inputs.map((i) => i.value) as string[] & { changedAxis?: number };
+        const values = this.inputs.map((input, i) =>
+          axis === undefined || axis === i ? input.value : this.committed[i]!,
+        ) as string[] & { changedAxis?: number };
         const changed = values
           .map((v, i) => (v !== this.committed[i] ? i : -1))
           .filter((i) => i >= 0);
-        values.changedAxis = changed.length === 1 ? changed[0] : undefined;
+        values.changedAxis = axis ?? (changed.length === 1 ? changed[0] : undefined);
         try {
           bridge.validate(this.id, values);
           this.changedAxis = values.changedAxis;
           this.committed = values;
           this.dirty = false;
-          this.change();
+          const app = bridge.current()!;
+          const field = all.find((f) => this.id.endsWith('__' + FIELD_PREFIX + f.id))!;
+          const ids = bridge.targets().map((n) => n.id);
+          app.execute(field.label, (doc) => {
+            for (const id of ids) field.write!(doc.nodes[id]!, values, doc);
+          });
+          bridge.refresh(false);
         } catch (error) {
           for (const i of this.inputs) i.setAttribute('aria-invalid', 'true');
           bridge.bb.Blockbench.showQuickMessage(
@@ -389,6 +465,10 @@ export class PropertyBridge {
         const values = [...this.committed] as string[] & { changedAxis?: number };
         values.changedAxis = this.changedAxis;
         return values;
+      }
+      delete() {
+        for (const dispose of this.scrubCleanup) dispose();
+        super.delete();
       }
       setValue(values: string[]) {
         if (this.dirty && this.selection === this.key()) return;

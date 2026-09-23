@@ -1,4 +1,6 @@
 import type { HostRuntime } from './runtime';
+import { inputStep, stepNumber } from './input-step';
+import { bindScrub } from './input-scrub';
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = '') {
   const node = document.createElement(tag);
@@ -12,6 +14,7 @@ export interface ControlContext {
   update: (() => void)[];
   cleanup: (() => void)[];
   report(error: unknown): void;
+  beginScrub?(): (commit: boolean) => void;
 }
 
 export function button(label: string, run: () => void, title = label) {
@@ -28,9 +31,20 @@ export function input(
   label: string,
   read: () => string | number | undefined,
   write: (value: string) => void,
-  options: { number?: boolean; min?: number; hint?: string; disabled?: () => boolean } = {},
+  options: {
+    number?: boolean;
+    min?: number;
+    hint?: string;
+    disabled?: () => boolean;
+    step?: (value: string, delta: number) => string;
+  } = {},
 ) {
   const node = el('input', 'focusable_input mcui-inspector-input');
+  const step =
+    options.step ??
+    (options.number
+      ? (value: string, delta: number) => stepNumber(value, delta, options.min)
+      : undefined);
   node.type = options.number ? 'number' : 'text';
   if (options.min !== undefined) node.min = String(options.min);
   node.step = '1';
@@ -87,6 +101,21 @@ export function input(
   node.onchange = commit;
   node.onblur = commit;
   node.onkeydown = (e) => {
+    const delta = step ? inputStep(e) : null;
+    if (delta !== null && step) {
+      if (node.disabled || node.readOnly || key !== ctx.key() || !ctx.enabled()) return;
+      try {
+        const next = step(node.value, delta);
+        if (next === node.value) return;
+        node.value = next;
+        dirty = true;
+        commit();
+      } catch (error) {
+        node.setAttribute('aria-invalid', 'true');
+        ctx.report(error);
+      }
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       e.stopPropagation();
@@ -100,6 +129,27 @@ export function input(
     }
   };
   ctx.update.push(refresh);
+  if (step && ctx.beginScrub)
+    ctx.cleanup.push(
+      bindScrub(node, {
+        key: ctx.key,
+        enabled: () => ctx.enabled() && !options.disabled?.(),
+        step,
+        report: ctx.report,
+        refresh,
+        begin: () => {
+          const finish = ctx.beginScrub!();
+          dirty = false;
+          return {
+            preview: (value) => {
+              write(value);
+              return true;
+            },
+            finish,
+          };
+        },
+      }),
+    );
   return node;
 }
 

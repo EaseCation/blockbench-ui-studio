@@ -46,3 +46,9 @@ Shift+A 选中已是 Stack 的单个 Frame 时打开布局属性，不产生新 
 application/layout-commands 处理 Frame 原地启用和移除，沿用布局内核、错误回滚和单事务；普通选区复用已有 wrapAutoLayout。adapters/blockbench/shortcuts 只负责原生 Action/Keybind 注册、作用域与 press_key.capture，避免一次按键同时落入宿主工具。视图命令复用 ViewportController.fit，并允许限定选区。
 
 验证实际 Shift/Alt 按键、重复触发、单次 Undo、边界保留、空 Frame、锁定、重绑定、缩放不写文档、输入/弹窗/原生/透视隔离、属性面板后的复制，以及原有绘制键的回归。
+
+## 数值字段与 Scrubbing
+
+已阅读 Figma 官方 [Adjust alignment, rotation, position, and dimensions](https://help.figma.com/hc/en-us/articles/360039956914-Adjust-alignment-rotation-position-and-dimensions) 的 Scrub fields：拖字段标签，或 Option/Alt 拖字段本身；左右调整，上下改变 2×/1×/½×/¼× 档位。
+
+现已接入上述起手和速度档位，覆盖本插件各数值输入与图片/九宫格预览。↑/↓ 每次调整 1，表达式只修改像素偏移。拖动实时预览、松手一次提交、Escape/失焦/切项目取消。当前为屏幕内指针捕获，未复刻 Figma 的跨屏边缘无限拖动。数字输入的普通选择与 IME 修饰键保持原有行为。
