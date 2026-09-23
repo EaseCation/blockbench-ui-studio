@@ -13,17 +13,49 @@ export function installShortcuts(
   const focused = () =>
     document.activeElement instanceof HTMLElement &&
     !!document.activeElement.closest('input,textarea,select,[contenteditable=true]');
-  const context = () =>
+  const context = (allowMenu = false) =>
     !!current() &&
-    !!viewport()?.shortcutsAvailable() &&
+    !!viewport()?.shortcutsAvailable(allowMenu) &&
     !focused() &&
     !bb.open_interface &&
-    !bb.open_menu &&
+    (allowMenu || !bb.open_menu) &&
     (['preview', 'outliner', 'element', 'transform', 'mcui_layout', 'mcui_content'].includes(
       bb.Prop.active_panel,
     ) ||
       String(bb.Prop.active_panel).startsWith('mcui_'));
   const definitions = [
+    {
+      id: 'mcui_group_selection',
+      name: 'UI：将选区组成 Frame',
+      icon: 'create_new_folder',
+      key: { key: 'g', ctrl: true },
+      run: () => current()?.groupSelection(),
+      available: () => !!current()?.state.selection.length,
+    },
+    {
+      id: 'mcui_frame_selection',
+      name: 'UI：从选区创建 Frame',
+      icon: 'crop_free',
+      key: { key: 'g', ctrl: true, alt: true },
+      run: () => current()?.groupSelection(),
+      available: () => !!current()?.state.selection.length,
+    },
+    {
+      id: 'mcui_ungroup',
+      name: 'UI：解除编组',
+      icon: 'ungroup',
+      key: { key: 'g', ctrl: true, shift: true },
+      run: () => current()?.ungroupSelection(),
+      available: () => !!current()?.state.selection.length,
+    },
+    {
+      id: 'mcui_ungroup_all',
+      name: 'UI：解除全部编组',
+      icon: 'account_tree',
+      key: undefined,
+      run: () => current()?.ungroupSelection(true),
+      available: () => !!current()?.state.selection.length,
+    },
     {
       id: 'mcui_auto_layout',
       name: 'UI：添加自动布局',
@@ -71,15 +103,15 @@ export function installShortcuts(
       name: d.name,
       icon: d.icon,
       category: 'edit',
-      keybind: new bb.Keybind(d.key),
-      condition: () => context() && d.available(),
+      keybind: d.key ? new bb.Keybind(d.key) : undefined,
+      condition: () => context(true) && d.available(),
       click: d.run,
     });
     actions.push(action);
     life.add(action);
     bb.MenuBar.addAction(action, 'tools');
     life.add(() => bb.MenuBar.removeAction('tools.' + d.id));
-    if (d.id.includes('auto_layout'))
+    if (d.id.includes('auto_layout') || d.id.includes('group') || d.id === 'mcui_frame_selection')
       for (const ctor of [bb.Group, bb.Cube]) {
         ctor.prototype.menu.addAction(action);
         life.add(() => ctor.prototype.menu.removeAction(action));
@@ -89,7 +121,7 @@ export function installShortcuts(
     bb.Blockbench.on('press_key', (data: HostObject) => {
       if (!context() || data.input_in_focus || data.event.isComposing) return;
       for (const action of actions)
-        if (action.keybind.isTriggered(data.event)) {
+        if (action.keybind?.isTriggered(data.event)) {
           // Even unavailable shortcuts must not fall through to an unrelated native action.
           data.capture();
           if (!data.event.repeat) action.trigger(data.event);

@@ -15,6 +15,7 @@ export interface NativeSnapshot {
   kind?: 'image' | 'frame';
   surfaceId?: string;
   sourceId?: string;
+  recoveredContainer?: boolean;
   children?: Id[];
   generatedPixels?: Pixels;
   generated?: { provider: string; data: Record<string, unknown> };
@@ -45,7 +46,7 @@ export interface ScenePort {
     bitmaps: Record<Id, Pixels>,
     previous: UiDocument | null,
   ): void;
-  select(doc: UiDocument, ids: Id[]): void;
+  select(doc: UiDocument, ids: Id[], history?: boolean): void;
   previewMove(doc: UiDocument, ids: Id[], dx: number, dy: number): void;
   clearPreview(): void;
 }

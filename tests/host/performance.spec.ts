@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './host-test';
 import { readFile } from 'node:fs/promises';
 const bundle = await readFile('dist/mcui_studio.js', 'utf8');
 test('复杂文档的普通位置编辑不因原生属性快照而停顿，Undo/Redo 保持位置', async ({ page }) => {

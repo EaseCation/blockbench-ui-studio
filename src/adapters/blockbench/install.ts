@@ -1,3 +1,4 @@
+import { installGrouping } from './grouping';
 import { contentMetadata } from './content-carrier';
 import { contentApi } from './content-api';
 import { contentProviders } from '../../application/content';
@@ -49,6 +50,7 @@ export function install(bb: HostRuntime) {
     bb.BARS.updateConditions();
   }
   const get = () => (bb.Project ? apps.get(bb.Project.uuid) : undefined);
+  life.add(installGrouping(bb, () => get()?.app ?? null));
   const outlinerView = new OutlinerView(bb);
   life.add(() => outlinerView.dispose());
   const properties = new PropertyBridge(bb, () => get()?.app ?? null);
@@ -760,7 +762,7 @@ export function install(bb: HostRuntime) {
   life.add(() => contents.dispose());
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.8.3',
+    version: '0.8.4',
     contents: contents.api,
     newProject,
     getStudio: () => current,

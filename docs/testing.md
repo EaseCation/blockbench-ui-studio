@@ -23,3 +23,5 @@ npm run test:host
 人工检查：Mac 触摸板惯性与捏合、鼠标中键、真实剪贴板图片、半透明视觉、绘画手感，以及未安装插件的桌面应用。执行结果与未完成项目记录在 `docs/verification.md`。
 
 配套文字插件的集成用例默认读取同级 `../blockbench-bbmodel-text/dist/bbmodel-text-component.js`，也可设置 `MCUI_TEXT_PLUGIN` 指向实际构建文件。没有提供该插件时，相关用例会标记跳过，其余宿主测试正常执行。需要完整验证时先构建文字插件。
+
+宿主用例通过host-test固定启动新闻和插件统计响应，避免外部CDN连接失败产生与本地编辑无关的未处理异常；不会屏蔽插件自身的pageerror。

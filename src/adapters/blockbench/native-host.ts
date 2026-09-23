@@ -211,11 +211,10 @@ export class NativeHost implements HostPort {
   scene(doc: UiDocument): NativeSceneSnapshot {
     const scene: NativeSceneSnapshot = { nodes: {}, roots: [], selection: [] };
     const ids = new Map(Object.entries(doc.bindings).map(([id, b]) => [b.containerId, id]));
-    const ownedSurfaces = new Set(
-      Object.values(doc.bindings)
-        .filter((b) => b.surfaceId !== b.containerId)
-        .map((b) => b.surfaceId)
-        .filter(Boolean),
+    const surfaceOwners = new Map(
+      Object.entries(doc.bindings)
+        .filter(([, b]) => b.surfaceId && b.surfaceId !== b.containerId)
+        .map(([id, b]) => [b.surfaceId!, id]),
     );
     const selected: Id[] = [];
     const accepted = (e: HostObject) => e instanceof this.bb.Cube || e instanceof this.bb.Group;
@@ -238,8 +237,10 @@ export class NativeHost implements HostPort {
     const walk = (items: HostObject[], parentId?: string, parentSurface?: string): string[] => {
       const order: string[] = [];
       for (const e of items.filter(accepted)) {
-        if (ownedSurfaces.has(e.uuid) || e.uuid === parentSurface) continue;
-        const id = ids.get(e.uuid) ?? e.uuid;
+        const owner = surfaceOwners.get(e.uuid);
+        const recovered = !!owner && !this.element(doc.bindings[owner]!.containerId);
+        if ((owner && !recovered) || e.uuid === parentSurface) continue;
+        const id = recovered ? owner! : (ids.get(e.uuid) ?? e.uuid);
         const original = doc.nodes[e[SOURCE_MARKER]];
         const n = doc.nodes[id] ?? original;
         const binding = doc.bindings[id];
@@ -294,7 +295,7 @@ export class NativeHost implements HostPort {
         if (
           surface &&
           binding &&
-          !isCube &&
+          (!isCube || recovered) &&
           (JSON.stringify(surface.faces.up.uv) !==
             JSON.stringify([0, 0, t?.uv_width, t?.uv_height]) ||
             (binding.textureId && binding.textureId !== t?.uuid) ||
@@ -322,6 +323,7 @@ export class NativeHost implements HostPort {
         scene.nodes[id] = {
           id,
           containerId: e.uuid,
+          recoveredContainer: recovered,
           surfaceId: surface?.uuid,
           generatedPixels:
             !n && surface
@@ -337,7 +339,7 @@ export class NativeHost implements HostPort {
           sourceId: e[SOURCE_MARKER] || undefined,
           rect,
           depth: surface?.to[1] ?? 0,
-          name: e.name,
+          name: recovered ? n!.name : e.name,
           visible: e.visibility !== false,
           locked: e.locked === true,
           fingerprint,
@@ -486,19 +488,6 @@ export class NativeHost implements HostPort {
     if (!this.active()) throw new Error('项目已切换');
     const changedElements: HostObject[] = [];
     const changedGroups: HostObject[] = [];
-    if (previous)
-      for (const [id, binding] of Object.entries(previous.bindings)) {
-        if (doc.nodes[id]) continue;
-        const e = this.element(binding.containerId);
-        if (e) e.remove();
-        if (
-          binding.textureId &&
-          !Object.values(doc.bindings).some((b) => b.textureId === binding.textureId)
-        ) {
-          const t = this.texture(binding.textureId);
-          if (t) t.remove(true);
-        }
-      }
     this.clearPreview();
     for (const id of scene.order) {
       const n = doc.nodes[id]!,
@@ -610,6 +599,20 @@ export class NativeHost implements HostPort {
         element.faces[face].texture = face === 'up' ? texture.uuid : null;
       element.faces.up.uv = [0, 0, texture.uv_width, texture.uv_height];
     }
+    // Surviving containers must leave removed Frames before native recursive removal.
+    if (previous)
+      for (const [id, binding] of Object.entries(previous.bindings)) {
+        if (doc.nodes[id]) continue;
+        const e = this.element(binding.containerId);
+        if (e) e.remove();
+        if (
+          binding.textureId &&
+          !Object.values(doc.bindings).some((b) => b.textureId === binding.textureId)
+        ) {
+          const t = this.texture(binding.textureId);
+          if (t) t.remove(true);
+        }
+      }
     this.onBeforeViewUpdate?.(doc);
     this.bb.Canvas.updateView({
       elements: changedElements,
@@ -653,14 +656,18 @@ export class NativeHost implements HostPort {
       this.syncingTexture = false;
     }
   }
-  select(doc: UiDocument, ids: Id[]) {
+  select(doc: UiDocument, ids: Id[], history = true) {
     if (!this.active()) return;
     const selected = topSelection(doc, this.selection(doc));
-    if (JSON.stringify([...selected].sort()) === JSON.stringify([...ids].sort())) {
+    const normalized = ids.every((id) => {
+      const e = this.element(doc.bindings[id]?.containerId ?? '');
+      return e instanceof this.bb.Group ? this.project.selected_groups?.includes(e) : e?.selected;
+    });
+    if (normalized && JSON.stringify([...selected].sort()) === JSON.stringify([...ids].sort())) {
       this.syncSelectedTexture(doc, ids);
       return;
     }
-    this.bb.Undo.initSelection();
+    if (history) this.bb.Undo.initSelection();
     this.bb.unselectAllElements();
     for (const id of ids) {
       const e = this.element(doc.bindings[id]?.containerId ?? '');
@@ -669,7 +676,7 @@ export class NativeHost implements HostPort {
       e?.showInOutliner?.();
     }
     this.bb.updateSelection();
-    this.bb.Undo.finishSelection('Select UI elements');
+    if (history) this.bb.Undo.finishSelection('Select UI elements');
     this.syncSelectedTexture(doc, ids);
   }
   private paintOwner: Id | null = null;

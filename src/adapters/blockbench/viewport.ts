@@ -1,3 +1,4 @@
+import { topSelection } from '../../domain/document';
 import { BindingIndex } from './binding-index';
 import { UiGrid } from './ui-grid';
 import {
@@ -50,6 +51,8 @@ export class ViewportController {
   private labelContext = document.createElement('canvas').getContext('2d');
   private alt = false;
   private pointerId: number | null = null;
+  private nativeMarquee: { preview: HostObject; docId: Id; old: Id[]; extend: boolean } | null =
+    null;
   private machine: InteractionMachine;
   private drawing = new DrawingMachine();
   private drawingTools: Partial<Record<DrawKind, HostObject>> = {};
@@ -142,6 +145,8 @@ export class ViewportController {
       }),
     );
     this.machine = new InteractionMachine(studio, { pan: (dx, dy) => this.pan(dx, dy) });
+    this.disposables.listen(document, 'mouseup', () => this.finishNativeMarquee(), true);
+    this.disposables.listen(document, 'touchend', () => this.finishNativeMarquee(), true);
     this.disposables.add(
       studio.subscribe(() => {
         if (this.drawing.request) this.updateDrawing();
@@ -242,9 +247,9 @@ export class ViewportController {
     this.syncTool();
     this.draw();
   }
-  shortcutsAvailable() {
+  shortcutsAvailable(allowMenu = false) {
     return (
-      this.drawingContext() &&
+      this.drawingContext(allowMenu) &&
       this.pointerId === null &&
       !this.drawing.request &&
       !this.bb.Preview.selected?.selection?.sr_move_f
@@ -295,7 +300,7 @@ export class ViewportController {
       this.bb.Preview.selected?.isOrtho
     );
   }
-  private drawingContext() {
+  private drawingContext(allowMenu = false) {
     return (
       this.bb.Project?.uuid === this.projectId &&
       this.navigationActive() &&
@@ -304,7 +309,7 @@ export class ViewportController {
       !this.studio.state.busy &&
       !this.bb.Dialog.open &&
       !this.bb.open_interface &&
-      !this.bb.open_menu
+      (allowMenu || !this.bb.open_menu)
     );
   }
   private drawingKind(): DrawKind | null {
@@ -318,6 +323,7 @@ export class ViewportController {
     return this.drawingContext() && !!this.drawingKind();
   }
   private cancelInput() {
+    this.nativeMarquee = null;
     this.machine?.cancel();
     this.drawing.cancel();
     this.drawingPreview = null;
@@ -500,6 +506,12 @@ export class ViewportController {
       p.node.setPointerCapture(e.pointerId);
       this.machine.down(this.input(e, p));
     } else {
+      this.nativeMarquee = {
+        preview: p,
+        docId: this.studio.state.doc.id,
+        old: [...this.studio.state.selection],
+        extend: e.shiftKey,
+      };
       if (!e.shiftKey) this.studio.select([]);
       // Only the registered UI tool is toggled; the native marquee owns its DOM and history.
       this.tool.selectElements = true;
@@ -509,6 +521,46 @@ export class ViewportController {
         this.tool.selectElements = false;
       }
     }
+  }
+  private finishNativeMarquee() {
+    const gesture = this.nativeMarquee;
+    this.nativeMarquee = null;
+    if (
+      !gesture ||
+      !this.active() ||
+      gesture.docId !== this.studio.state.doc.id ||
+      !gesture.preview.selection.activated
+    )
+      return;
+    const doc = this.studio.state.doc,
+      scene = this.studio.state.scene;
+    const box = gesture.preview.selection.box.getBoundingClientRect();
+    const node = gesture.preview.node.getBoundingClientRect();
+    const rect = {
+      x: box.left - node.left,
+      y: box.top - node.top,
+      width: box.width,
+      height: box.height,
+    };
+    const ids = [...(gesture.extend ? gesture.old : []), ...this.studio.host.selection(doc)].filter(
+      (id) => scene.nodes[id]?.visible && !scene.nodes[id]?.locked,
+    );
+    for (const n of this.pickNodes(gesture.preview)) {
+      const r = n.rect;
+      if (
+        n.kind === 'frame' &&
+        !n.disabled &&
+        r.x >= rect.x - 0.01 &&
+        r.y >= rect.y - 0.01 &&
+        r.x + r.width <= rect.x + rect.width + 0.01 &&
+        r.y + r.height <= rect.y + rect.height + 0.01
+      )
+        ids.push(n.id);
+    }
+    const selected = topSelection(doc, [...new Set(ids)]);
+    this.studio.reflectSelection(selected);
+    // Runs before the native mouseup handler captures its final selection history.
+    this.studio.host.select(doc, selected, false);
   }
   private input(e: PointerEvent, preview: HostObject) {
     const world = this.world(e.clientX, e.clientY, preview);

@@ -130,3 +130,11 @@ BindingIndex按bindings对象引用统一反查逻辑ID，用于属性、内容A
 布局计算的flow列表与Fill分配按父级/轴在单次求解内共享，跨次布局重新计算，保留循环检测和共享边界量化。视口一次投影遍历只读一次canvas/node边界；命中几何缓存按文档/scene引用、相机矩阵、边界、选区、悬停及放入标签状态失效，归属于预览对象的WeakMap。
 
 NativeHost的像素哈希以实际PNG输入为依据，每个Texture只保留最近一次结果；不改变指纹算法或绕过外部绘画检测。原生完整Undo继续保留，未引入对宿主原型或纹理解析规则的覆盖。实验脚本与当前测量见performance-round2.md。
+
+## 编组与解除（0.8.4）
+
+纯数据grouping模块处理逻辑Image/Frame，选区按原树顺序包装到公共祖先下的自由Frame；解组Frame提升子项，解组Image只释放逻辑子项，保留自身内容。递归解组保留全部Image、世界边界及有效显示/锁定状态。自动布局内允许连续流式子项编组；需要改变非连续流或向Stack直接提升子项时，明确要求先关闭父级自动布局。
+
+Grouping适配器通过原生Action的use事件路由add_group/group_elements/resolve_group，不覆盖宿主原型。原生框选继续绘制和命中，mouseup捕获阶段补充完整包围的Frame，并在宿主记录selection_post前把逻辑Image映射回其Group。真正的载体独立编辑仍走差异保护。
+
+NativeHost.apply先安置存活节点，再递归删除旧容器，避免Frame删除误删要提升的子组。Scene回读对失去容器但仍存活的已知内容Cube保留逻辑ID及素材绑定，普通操作中重建容器；冷加载仍保留原生差异保护。编组后的选区在同一编辑事务内提交；历史恢复重新读取原生选区，避免已恢复的Frame处于逻辑未选中状态。

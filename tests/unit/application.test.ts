@@ -382,3 +382,20 @@ describe('内容提供者事务', () => {
     }
   });
 });
+
+it('编组事务提交失败时恢复逻辑文档和原选区', () => {
+  const { app, host } = fixture();
+  const a = app.add('image'),
+    b = app.add('image');
+  app.select([a, b]);
+  const before = clone(app.state.doc),
+    selection = [...app.state.selection];
+  host.commit = () => {
+    throw new Error('commit failed');
+  };
+  expect(app.groupSelection()).toBeNull();
+  expect(app.state.doc).toEqual(before);
+  expect(app.state.selection).toEqual(selection);
+  expect(app.state.error).toBe('commit failed');
+  expect(host.cancels).toBe(1);
+});

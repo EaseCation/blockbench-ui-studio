@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './host-test';
 import { readFile } from 'node:fs/promises';
 const bundle = await readFile('dist/mcui_studio.js', 'utf8');
 async function start(page: Page) {

@@ -1,3 +1,4 @@
+import { groupNodes, ungroupNodes } from '../domain/grouping';
 import { contentProviders, type ContentData } from './content';
 import {
   clone,
@@ -257,10 +258,12 @@ export class Studio {
     }
     this.emit();
   }
-  execute(label: string, change: (doc: UiDocument) => void) {
+  execute(label: string, change: (doc: UiDocument) => void, selection?: () => Id[]) {
     if (this.state.busy) return false;
     if (this.gesture) this.endGesture(true);
     const previous = this.state.doc,
+      previousScene = this.state.scene,
+      previousSelection = [...this.state.selection],
       doc = clone(previous);
     try {
       change(doc);
@@ -272,21 +275,59 @@ export class Studio {
         started = true;
         this.publish(doc, calculated, previous);
         this.applying = true;
+        if (selection) {
+          this.state.selection = topSelection(doc, selection()).filter(
+            (id) => calculated.scene.nodes[id]?.visible && !calculated.scene.nodes[id]?.locked,
+          );
+          this.host.select(doc, this.state.selection, false);
+        }
         this.host.commit(label);
       } catch (e) {
         if (started) this.host.cancel();
         this.state.doc = previous;
-        this.state.scene = layout(previous);
+        this.state.scene = previousScene;
+        this.state.selection = previousSelection;
         this.renderKeys.clear();
         throw e;
       } finally {
         this.applying = false;
       }
+      if (selection) this.emit();
       return true;
     } catch (e) {
       this.report(e);
       return false;
     }
+  }
+  groupSelection(): Id | null {
+    if (!this.state.selection.length) return null;
+    const id = this.images.id();
+    return this.execute(
+      '将选区组成 Frame',
+      (doc) => {
+        groupNodes(doc, this.state.selection, id);
+      },
+      () => [id],
+    )
+      ? id
+      : null;
+  }
+  ungroupSelection(recursive = false): boolean {
+    if (
+      !this.state.selection.some((id) => {
+        const n = this.state.doc.nodes[id];
+        return n && (n.kind === 'frame' || n.children.length);
+      })
+    )
+      return false;
+    let selected: Id[] = [];
+    return this.execute(
+      recursive ? '解除全部编组' : '解除编组',
+      (doc) => {
+        selected = ungroupNodes(doc, this.state.selection, recursive);
+      },
+      () => selected,
+    );
   }
   validateChange(change: (doc: UiDocument) => void) {
     const candidate = clone(this.state.doc);
@@ -363,7 +404,12 @@ export class Studio {
     const doc = this.host.read();
     if (!doc) return;
     this.renderKeys.clear();
-    this.state = { ...this.state, doc: clone(doc), scene: this.resolveLayout(doc) };
+    this.state = {
+      ...this.state,
+      doc: clone(doc),
+      scene: this.resolveLayout(doc),
+      selection: topSelection(doc, this.host.selection(doc)),
+    };
     await this.initialize(false);
   }
   private captureNative() {
@@ -904,6 +950,15 @@ export class Studio {
     let changed = false;
     const newlyAdded = new Set<Id>();
     for (const snap of Object.values(snapshots)) {
+      if (snap.recoveredContainer && doc.bindings[snap.id]) {
+        doc.bindings[snap.id] = {
+          ...doc.bindings[snap.id]!,
+          containerId: snap.containerId!,
+          surfaceId: snap.surfaceId,
+          textureId: snap.textureId,
+        };
+        changed = true;
+      }
       if (doc.nodes[snap.id]) continue;
       const original = snap.sourceId ? previous.nodes[snap.sourceId] : undefined;
       const n = original
