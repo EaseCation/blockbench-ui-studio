@@ -39,7 +39,7 @@ export function layout(doc: UiDocument): ResolvedScene {
       if (!n.parent) throw new Error(`${n.name}: 根节点没有百分比参照父级`);
       value = measure(node(n.parent), axis) * rule.percent + rule.pixels;
     } else if (rule.kind === 'hug') {
-      if (n.kind === 'layer') {
+      if (n.kind === 'image') {
         const a = n.content && doc.assets[n.content.source];
         value = a ? a[axis] : n.rect[axis];
       } else {

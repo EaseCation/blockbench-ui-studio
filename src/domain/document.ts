@@ -59,6 +59,19 @@ export function validateDocument(value: unknown): UiDocument {
       !n.layout
     )
       throw new Error('图层结构无效');
+    if (n.kind !== 'image' && n.kind !== 'frame')
+      throw new Error('当前文档不符合 Image / Frame 结构');
+    if (
+      n.kind === 'frame' &&
+      (!n.frame ||
+        n.content ||
+        n.appearance ||
+        n.frame.engineType !== (n.frame.direction === 'free' ? 'panel' : 'stack_panel'))
+    )
+      throw new Error('Frame 布局类型无效');
+    if (n.kind === 'image' && (n.frame || !n.content)) throw new Error('Image 内容结构无效');
+    const binding = d.bindings[id];
+    if (binding && !binding.containerId) throw new Error('原生角色绑定不符合当前结构');
     seen.add(id);
     if (!Object.values(n.rect).every(Number.isFinite) || n.rect.width <= 0 || n.rect.height <= 0)
       throw new Error('图层尺寸无效');

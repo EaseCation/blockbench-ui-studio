@@ -6,6 +6,8 @@ import {
   topSelection,
   validateDocument,
 } from '../domain/document';
+import { reparentNodes, retainWorldRect } from '../domain/tree-editing';
+import type { DropIntent } from './targets';
 import { layout } from '../domain/layout';
 import { blank, decorate, hasAppearance, mergePaint, renderPixels } from '../domain/raster';
 import { bounds, mapRect } from '../domain/geometry';
@@ -23,6 +25,7 @@ export class Studio {
   private native = new Map<Id, NativeSnapshot>();
   private gesture: UiDocument | null = null;
   private gestureLabel = '';
+  private gestureTransaction = false;
   private disposed = false;
   constructor(
     readonly host: HostPort,
@@ -218,10 +221,12 @@ export class Studio {
       return false;
     }
   }
-  beginGesture(label: string) {
+  beginGesture(label: string, previewOnly = false) {
     if (this.state.busy || this.gesture) return;
     this.gesture = clone(this.state.doc);
     this.gestureLabel = label;
+    this.gestureTransaction = !previewOnly;
+    if (previewOnly) return;
     this.applying = true;
     try {
       this.host.begin(label);
@@ -235,21 +240,26 @@ export class Studio {
       const doc = clone(this.gesture);
       change(doc);
       this.publish(doc, this.calculate(doc), this.state.doc);
+      return true;
     } catch (e) {
       this.report(e);
+      return false;
     }
   }
   endGesture(commit = true) {
+    this.host.clearPreview();
+    this.movePreview = null;
     if (!this.gesture) return;
     const original = this.gesture;
     this.gesture = null;
     this.applying = true;
     try {
-      if (commit) this.host.commit(this.gestureLabel);
-      else {
-        this.host.cancel();
+      if (commit) {
+        if (this.gestureTransaction) this.host.commit(this.gestureLabel);
+      } else {
+        if (this.gestureTransaction) this.host.cancel();
         this.state = { ...this.state, doc: original, scene: layout(original) };
-        this.renderKeys.clear();
+        if (this.gestureTransaction) this.renderKeys.clear();
       }
     } finally {
       this.applying = false;
@@ -294,28 +304,23 @@ export class Studio {
     this.state = { ...this.state, view: value };
     this.emit();
   }
-  add(kind: 'layer' | 'frame' | 'group', parent: Id | null = null) {
+  add(kind: 'image' | 'frame', parent: Id | null = null) {
     const id = this.images.id();
     this.execute('新增 UI 图层', (doc) => {
       const p = parent ? doc.nodes[parent] : undefined;
       const rect = {
         x: (p?.rect.x ?? 0) + 8,
         y: (p?.rect.y ?? 0) + 8,
-        width: kind === 'layer' ? 32 : 160,
-        height: kind === 'layer' ? 32 : 90,
+        width: kind === 'image' ? 32 : 160,
+        height: kind === 'image' ? 32 : 90,
       };
-      const n = createNode(
-        id,
-        kind === 'layer' ? '绘画图层' : kind === 'frame' ? 'Frame' : '文件夹',
-        kind,
-        rect,
-      );
+      const n = createNode(id, kind === 'image' ? 'Image' : 'Frame', kind, rect);
       n.parent = parent;
       if (p) {
         n.layout.offset = { x: 8, y: 8 };
         p.children.push(id);
       } else doc.roots.push(id);
-      if (kind === 'layer') {
+      if (kind === 'image') {
         n.content = {
           kind: 'paint',
           source: this.putSource(doc, blank(32, 32)),
@@ -378,18 +383,67 @@ export class Studio {
     });
   }
   reparent(id: Id, parent: Id | null) {
-    this.execute('调整图层父级', (doc) => {
-      const n = doc.nodes[id];
-      if (!n) return;
-      if (parent && descendants(doc, id).includes(parent)) throw new Error('不能移动到自己的子层');
-      if (parent && doc.nodes[parent]?.kind === 'layer') throw new Error('图片图层不能包含子层');
-      const old = siblings(doc, n);
-      old.splice(old.indexOf(id), 1);
-      n.parent = parent;
-      (parent ? doc.nodes[parent]!.children : doc.roots).push(id);
-      const p = parent ? doc.nodes[parent]!.rect : { x: 0, y: 0 };
-      n.layout.offset = { x: n.rect.x - p.x, y: n.rect.y - p.y };
+    this.execute('调整图层父级', (doc) => reparentNodes(doc, [id], parent));
+  }
+  movePreview: { x: number; y: number } | null = null;
+  previewMove(dx: number, dy: number) {
+    if (!this.gesture) return;
+    this.movePreview = { x: Math.round(dx), y: Math.round(dy) };
+    this.host.previewMove(
+      this.gesture,
+      this.state.selection,
+      this.movePreview.x,
+      this.movePreview.y,
+    );
+  }
+  finishMove(dx: number, dy: number, drop: DropIntent | null) {
+    if (!this.gesture) return;
+    this.host.clearPreview();
+    this.movePreview = null;
+    this.applying = true;
+    try {
+      if (!this.gestureTransaction) {
+        this.host.begin(this.gestureLabel);
+        this.gestureTransaction = true;
+      }
+    } finally {
+      this.applying = false;
+    }
+    const ids = this.state.scene.order.filter((id) => this.state.selection.includes(id));
+    const ok = this.previewGesture((doc) => {
+      const rects: Record<Id, Rect> = {};
+      for (const id of ids) {
+        const n = doc.nodes[id]!;
+        rects[id] = { ...n.rect, x: n.rect.x + Math.round(dx), y: n.rect.y + Math.round(dy) };
+      }
+      if (drop) {
+        const target = doc.nodes[drop.parentId];
+        if (
+          !target ||
+          this.state.scene.nodes[target.id]?.locked ||
+          !this.state.scene.nodes[target.id]?.visible ||
+          target.suspended
+        )
+          throw new Error('放入目标已不可用');
+        reparentNodes(doc, ids, drop.parentId, drop.index, rects);
+      } else {
+        for (const id of ids) {
+          const n = doc.nodes[id]!,
+            parent = n.parent ? doc.nodes[n.parent] : undefined;
+          if (parent?.frame?.engineType === 'stack_panel' && n.layout.positioning === 'flow') {
+            const axis = parent.frame.direction === 'row' ? 'x' : 'y',
+              size = axis === 'x' ? 'width' : 'height';
+            const center = rects[id]![axis] + rects[id]![size] / 2;
+            parent.children.splice(parent.children.indexOf(id), 1);
+            const i = parent.children.findIndex(
+              (other) => doc.nodes[other]!.rect[axis] + doc.nodes[other]!.rect[size] / 2 > center,
+            );
+            parent.children.splice(i < 0 ? parent.children.length : i, 0, id);
+          } else retainWorldRect(doc, n, rects[id]!);
+        }
+      }
     });
+    this.endGesture(ok !== false);
   }
   changeRects(doc: UiDocument, targets: Record<Id, Rect>) {
     for (const id of topSelection(doc, Object.keys(targets))) {
@@ -452,6 +506,7 @@ export class Studio {
       const frame = createNode(id, '自动布局', 'frame', rect);
       frame.parent = selected[0]!.parent;
       frame.frame!.direction = row ? 'row' : 'column';
+      frame.frame!.engineType = 'stack_panel';
       frame.frame!.gap = gaps.length
         ? Math.max(0, Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length))
         : 8;
@@ -530,26 +585,25 @@ export class Studio {
       this.changeRects(doc, rects);
     });
   }
-  async paste(image: ImportedImage, forceNew = false) {
+  async paste(image: ImportedImage, forceNew = false, destination?: Id | null) {
     const pixels = await this.images.decode(image.png);
     if (this.disposed) return;
     const selected =
       this.state.selection.length === 1
         ? this.state.doc.nodes[this.state.selection[0]!]
         : undefined;
-    const existing = !forceNew && selected?.kind === 'layer' ? selected.id : null;
+    const existing = !forceNew && selected?.kind === 'image' ? selected.id : null;
     const id = existing ?? this.images.id();
     this.execute('粘贴图片', (doc) => {
       let n = doc.nodes[id];
       if (!n) {
-        n = createNode(id, image.name, 'layer', {
+        n = createNode(id, image.name, 'image', {
           x: 0,
           y: 0,
           width: image.width,
           height: image.height,
         });
-        const parent =
-          selected && selected.kind !== 'layer' ? selected.id : (selected?.parent ?? null);
+        const parent = destination === undefined ? (selected?.id ?? null) : destination;
         n.parent = parent;
         (parent ? doc.nodes[parent]!.children : doc.roots).push(id);
         doc.nodes[id] = n;
@@ -718,7 +772,7 @@ export class Studio {
       const original = snap.sourceId ? previous.nodes[snap.sourceId] : undefined;
       const n = original
         ? clone(original)
-        : createNode(snap.id, snap.name, snap.kind === 'group' ? 'group' : 'layer', snap.rect);
+        : createNode(snap.id, snap.name, snap.kind === 'frame' ? 'frame' : 'image', snap.rect);
       n.id = snap.id;
       n.name = snap.name;
       n.children = [];
@@ -727,7 +781,7 @@ export class Studio {
       n.visible = snap.visible;
       n.locked = snap.locked;
       delete n.suspended;
-      if (!original && n.kind === 'layer') {
+      if (!original && n.kind === 'image') {
         const pixels = snap.textureId ? this.host.pixels(snap.textureId) : null;
         const source = this.putSource(
           doc,
@@ -744,7 +798,8 @@ export class Studio {
         n.suspended = snap.unsupported ?? '发现原生新增对象，已保留原生内容';
       doc.nodes[n.id] = n;
       doc.bindings[n.id] = {
-        elementId: snap.elementId ?? n.id,
+        containerId: snap.containerId ?? n.id,
+        surfaceId: snap.surfaceId,
         textureId: original && !onOpen ? undefined : snap.textureId,
       };
       newlyAdded.add(n.id);
@@ -813,20 +868,8 @@ export class Studio {
         // Reparenting retains world position for free layout; Flow parents decide the final placement.
         // New and duplicate nodes keep their inherited size rules.
         if (newlyAdded.has(n.id) || old?.parent !== n.parent) {
-          const p = parent?.rect ?? { x: 0, y: 0, width: 0, height: 0 };
-          n.layout.offset = {
-            x:
-              snap.rect.x -
-              p.x -
-              p.width * (n.layout.anchorFrom[0] + (n.layout.offsetPercent?.x ?? 0)) +
-              snap.rect.width * n.layout.anchorTo[0],
-            y:
-              snap.rect.y -
-              p.y -
-              p.height * (n.layout.anchorFrom[1] + (n.layout.offsetPercent?.y ?? 0)) +
-              snap.rect.height * n.layout.anchorTo[1],
-          };
-          n.rect = { ...snap.rect };
+          if (parent?.frame?.engineType === 'stack_panel') n.layout.positioning = 'flow';
+          else retainWorldRect(doc, n, snap.rect);
         } else if (JSON.stringify(n.rect) !== JSON.stringify(snap.rect)) {
           if (
             parent?.frame?.direction !== 'free' &&
@@ -840,7 +883,7 @@ export class Studio {
           }
           this.changeRects(doc, { [n.id]: snap.rect });
         }
-        if (!hierarchyChanged && before && snap.depth !== before.depth && n.kind === 'layer') {
+        if (!hierarchyChanged && before && snap.depth !== before.depth && n.kind === 'image') {
           siblings(doc, n).sort((a, b) => (snapshots[a]?.depth ?? 0) - (snapshots[b]?.depth ?? 0));
         }
       }

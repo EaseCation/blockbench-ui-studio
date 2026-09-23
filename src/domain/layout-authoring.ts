@@ -54,6 +54,7 @@ export function setDirection(doc: UiDocument, node: UiNode, direction: FrameSpec
     frame.align = previous;
   }
   frame.direction = direction;
+  frame.engineType = direction === 'free' ? 'panel' : 'stack_panel';
 }
 export function setSizeMode(node: UiNode, axis: Axis, mode: SizeRule['kind']) {
   if (node.layout[axis].kind === mode) return;

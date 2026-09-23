@@ -11,8 +11,9 @@ export interface NativeSnapshot {
   textureId?: string;
   unsupported?: string;
   parentId?: string;
-  elementId?: string;
-  kind?: 'layer' | 'group';
+  containerId?: string;
+  kind?: 'image' | 'frame';
+  surfaceId?: string;
   sourceId?: string;
   children?: Id[];
   siblingIndex?: number;
@@ -42,6 +43,8 @@ export interface ScenePort {
     previous: UiDocument | null,
   ): void;
   select(doc: UiDocument, ids: Id[]): void;
+  previewMove(doc: UiDocument, ids: Id[], dx: number, dy: number): void;
+  clearPreview(): void;
 }
 export interface TexturePort {
   pixels(textureId: string): Pixels | null;

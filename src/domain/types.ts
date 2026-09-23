@@ -28,6 +28,7 @@ export interface LayoutSpec {
   maxHeight?: number;
 }
 export interface FrameSpec {
+  engineType: 'panel' | 'stack_panel';
   direction: 'free' | 'row' | 'column';
   gap: number;
   padding: [number, number, number, number]; // top, right, bottom, left
@@ -76,7 +77,7 @@ export const defaultAppearance = (): Appearance => ({
 export interface UiNode {
   id: Id;
   name: string;
-  kind: 'layer' | 'frame' | 'group';
+  kind: 'image' | 'frame';
   parent: Id | null;
   children: Id[];
   rect: Rect;
@@ -102,7 +103,8 @@ export interface SourceAsset {
   revision: number;
 }
 export interface NativeBinding {
-  elementId: string;
+  containerId: string;
+  surfaceId?: string;
   textureId?: string;
   fingerprint?: string;
   groupOrigin?: [number, number, number];
@@ -146,7 +148,14 @@ export function defaultLayout(rect: Rect): LayoutSpec {
   };
 }
 export function defaultFrame(): FrameSpec {
-  return { direction: 'free', gap: 8, padding: [0, 0, 0, 0], justify: 'start', align: 'start' };
+  return {
+    engineType: 'panel',
+    direction: 'free',
+    gap: 8,
+    padding: [0, 0, 0, 0],
+    justify: 'start',
+    align: 'start',
+  };
 }
 export function createDocument(id: Id): UiDocument {
   return { schemaVersion: 1, id, roots: [], nodes: {}, assets: {}, bindings: {} };
@@ -163,6 +172,6 @@ export function createNode(id: Id, name: string, kind: UiNode['kind'], rect: Rec
     locked: false,
     opacity: 1,
     layout: defaultLayout(rect),
-    ...(kind !== 'layer' ? { frame: defaultFrame() } : {}),
+    ...(kind !== 'image' ? { frame: defaultFrame() } : {}),
   };
 }

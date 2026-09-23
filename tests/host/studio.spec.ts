@@ -43,7 +43,7 @@ test('原生对象、纹理尺寸、Undo 与无插件往返保存', async ({ pag
   const initial = await page.evaluate(async () => {
     const app = window.Blockbench.mcuiStudio.getStudio();
     const root = app.state.doc.roots[0];
-    const id = app.add('layer', root);
+    const id = app.add('image', root);
     const canvas = document.createElement('canvas');
     canvas.width = 16;
     canvas.height = 16;
@@ -59,7 +59,7 @@ test('原生对象、纹理尺寸、Undo 与无插件往返保存', async ({ pag
       n.layout.height = { kind: 'fixed', value: 40 };
     });
     const b = app.state.doc.bindings[id],
-      cube = window.Cube.all.find((c: any) => c.uuid === b.elementId),
+      cube = window.Cube.all.find((c: any) => c.uuid === b.surfaceId),
       tex = window.Texture.all.find((t: any) => t.uuid === b.textureId);
     return {
       id,
@@ -99,7 +99,7 @@ test('二维交互、视图切换和完整卸载', async ({ page }) => {
   await page.evaluate(async () => {
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio();
-    app.add('layer', app.state.doc.roots[0]);
+    app.add('image', app.state.doc.roots[0]);
   });
   await expect(page.locator('[data-mcui-handle]')).toHaveCount(8);
   const handle = page.locator('[data-mcui-handle="se"]').first();
@@ -140,7 +140,7 @@ test('原生绘画层、非破坏裁切与原生尺寸工具', async ({ page }) 
   });
   const result = await page.evaluate(() => {
     const app = window.Blockbench.mcuiStudio.getStudio(),
-      id = app.add('layer', app.state.doc.roots[0]);
+      id = app.add('image', app.state.doc.roots[0]);
     const texture = window.Texture.all[0];
     texture.activateLayers(false);
     window.Undo.initEdit({ layers: [texture.layers[0]], bitmap: true });
@@ -192,7 +192,7 @@ test('父布局驱动两个九宫格，单次撤销恢复全部', async ({ page 
     ctx.fillRect(0, 0, 16, 16);
     const ids: string[] = [];
     for (let i = 0; i < 2; i++) {
-      const id = app.add('layer', root);
+      const id = app.add('image', root);
       app.select([id]);
       await app.paste({ png: canvas.toDataURL(), width: 16, height: 16, name: 'button' });
       app.makeNine(id);
@@ -202,6 +202,7 @@ test('父布局驱动两个九宫格，单次撤销恢复全部', async ({ page 
       const p = d.nodes[root];
       p.layout.width = { kind: 'fixed', value: 100 };
       p.frame.direction = 'row';
+      p.frame.engineType = 'stack_panel';
       p.frame.padding = [4, 4, 4, 4];
       p.frame.gap = 8;
       for (const id of ids) {
@@ -232,7 +233,7 @@ test('源图使用原生绘画会话，应用后更新且可撤销', async ({ pa
   await page.evaluate(async () => {
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio();
-    const id = app.add('layer', app.state.doc.roots[0]);
+    const id = app.add('image', app.state.doc.roots[0]);
     app.makeNine(id);
     app.paint(id);
   });
@@ -267,7 +268,7 @@ test('无插件修改不被覆盖，重新启用后采用当前结果', async ({
   await page.evaluate(async () => {
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio();
-    app.add('layer', app.state.doc.roots[0]);
+    app.add('image', app.state.doc.roots[0]);
   });
   await page.evaluate(() => {
     window.Plugins.registered.mcui_studio.onunload();
@@ -282,7 +283,7 @@ test('无插件修改不被覆盖，重新启用后采用当前结果', async ({
   );
   const node = (await page.evaluate(() =>
     Object.values(window.Blockbench.mcuiStudio.getStudio().state.doc.nodes).find(
-      (n: any) => n.kind === 'layer',
+      (n: any) => n.kind === 'image',
     ),
   )) as any;
   expect(node.suspended).toMatch(/修改/);
@@ -296,7 +297,7 @@ test('双击原生画笔与触摸板缩放事件不会改变模型尺寸', async
   await page.evaluate(async () => {
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio();
-    app.add('layer', app.state.doc.roots[0]);
+    app.add('image', app.state.doc.roots[0]);
   });
   const point = () =>
     page.evaluate(() => {
@@ -362,7 +363,7 @@ test('绘画层缩放后仍按实际像素绘画，复制保持独立可编辑�
   });
   const result = await page.evaluate(() => {
     const app = window.Blockbench.mcuiStudio.getStudio(),
-      id = app.add('layer', app.state.doc.roots[0]);
+      id = app.add('image', app.state.doc.roots[0]);
     const t = window.Texture.all[0];
     t.activateLayers(false);
     window.Undo.initEdit({ layers: [t.layers[0]], bitmap: true });
@@ -438,9 +439,9 @@ test('原生大纲选中后自动打开元素标签；表达式草稿原子提�
     await window.Blockbench.mcuiStudio.newProject();
     window.BarItems.mcui_add_layer.trigger();
     const app = window.Blockbench.mcuiStudio.getStudio();
-    return app.state.selection[0];
+    return app.state.doc.bindings[app.state.selection[0]].containerId;
   });
-  const input = page.locator('#panel_element input[id="cube__mcui_size_w"]');
+  const input = page.locator('#panel_element input[id="group__mcui_size_w"]');
   await expect(input).toBeVisible();
   await expect(page.locator('#panel_mcui_studio')).toHaveCount(0);
   await page.evaluate(() => {
@@ -470,16 +471,19 @@ test('原生大纲排序、换父级和撤销同步规则与 Y', async ({ page }
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
-    const a = app.add('layer', root),
-      b = app.add('layer', root),
+    const a = app.add('image', root),
+      b = app.add('image', root),
       frame = app.add('frame');
     const lookup = (id: string) =>
-      (window as any).OutlinerNode.uuids[app.state.doc.bindings[id].elementId];
+      (window as any).OutlinerNode.uuids[app.state.doc.bindings[id].containerId];
     app.select([b]);
     (window as any).moveOutlinerSelectionTo(lookup(b), lookup(a), -1, { event: { altKey: false } });
     const order = [...app.state.doc.nodes[root].children],
-      y = [lookup(b).to[1], lookup(a).to[1]],
-      x = lookup(b).from[0];
+      y = [
+        window.Cube.all.find((c: any) => c.uuid === app.state.doc.bindings[b].surfaceId).to[1],
+        window.Cube.all.find((c: any) => c.uuid === app.state.doc.bindings[a].surfaceId).to[1],
+      ],
+      x = window.Cube.all.find((c: any) => c.uuid === app.state.doc.bindings[b].surfaceId).from[0];
     const history = window.Undo.history.length;
     (window as any).moveOutlinerSelectionTo(lookup(b), lookup(frame), 0, {
       event: { altKey: false },
@@ -492,7 +496,8 @@ test('原生大纲排序、换父级和撤销同步规则与 Y', async ({ page }
       order,
       y,
       x,
-      afterX: lookup(b).from[0],
+      afterX: window.Cube.all.find((c: any) => c.uuid === app.state.doc.bindings[b].surfaceId)
+        .from[0],
       parent: app.state.doc.nodes[b].parent,
       suspended: !!app.state.doc.nodes[b].suspended,
       steps: window.Undo.history.length - history,
@@ -523,13 +528,13 @@ test('原生 Option 复制保留九宫格规则并生成独立贴图', async ({ 
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0],
-      id = app.add('layer', root);
+      id = app.add('image', root);
     app.makeNine(id);
     app.select([id]);
-    const cube = window.Cube.all[0];
-    (window as any).moveOutlinerSelectionTo(cube, cube.parent, 0, { event: { altKey: true } });
+    const node = (window as any).OutlinerNode.uuids[app.state.doc.bindings[id].containerId];
+    (window as any).moveOutlinerSelectionTo(node, node.parent, 0, { event: { altKey: true } });
     const nodes = Object.values(app.state.doc.nodes).filter(
-      (n: any) => n.kind === 'layer',
+      (n: any) => n.kind === 'image',
     ) as any[];
     return {
       count: nodes.length,
@@ -554,12 +559,12 @@ test('原生多选属性批量提交，循环布局回滚且不污染普通项�
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
-    const a = app.add('layer', root),
-      b = app.add('layer', root);
+    const a = app.add('image', root),
+      b = app.add('image', root);
     app.select([a, b]);
     return { root, a, b };
   });
-  const width = page.locator('#panel_element input[id="cube__mcui_size_w"]');
+  const width = page.locator('#panel_element input[id="group__mcui_size_w"]');
   await expect(width).toBeVisible();
   await width.fill('64px');
   await width.press('Enter');
@@ -594,7 +599,7 @@ test('原生多选属性批量提交，循环布局回滚且不污染普通项�
     window.setupProject(window.Formats.free);
     new window.Cube({ name: 'Ordinary' }).init().select();
   });
-  await expect(page.locator('#panel_element .form_bar_cube__mcui_size')).not.toBeVisible();
+  await expect(page.locator('#panel_element .form_bar_group__mcui_size')).not.toBeVisible();
 });
 
 test('原生框选复用宿主框，过滤锁定对象且保留框选历史', async ({ page }) => {
@@ -603,8 +608,8 @@ test('原生框选复用宿主框，过滤锁定对象且保留框选历史', as
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
-    const a = app.add('layer', root),
-      b = app.add('layer', root);
+    const a = app.add('image', root),
+      b = app.add('image', root);
     app.update(b, (n: any) => {
       n.layout.offset.x = 60;
       n.locked = true;
@@ -616,7 +621,7 @@ test('原生框选复用宿主框，过滤锁定对象且保留框选历史', as
       const v = new (window as any).THREE.Vector3(x, 0, z).project(p.camera);
       return { x: r.left + ((v.x + 1) * r.width) / 2, y: r.top + ((1 - v.y) * r.height) / 2 };
     };
-    return { from: project(0, 0), to: project(105, 48), a, b };
+    return { from: project(105, 48), to: project(5, 5), a, b };
   });
   await page.mouse.move(points.from.x, points.from.y);
   await page.mouse.down();
@@ -639,7 +644,7 @@ test('紧凑原生标签：两行坐标尺寸、字段说明和百分比位置',
   await expect(pos).toBeVisible();
   await expect(width).toBeVisible();
   expect(
-    await page.locator('#panel_element .form_bar_cube__mcui_size').getAttribute('title'),
+    await page.locator('#panel_element .form_bar_group__mcui_size').getAttribute('title'),
   ).toContain('100% - 16px');
   const y = page.locator('#panel_element input[aria-label="UI Y 偏移"]:visible'),
     height = page.locator('#panel_element input[aria-label="UI 高度"]:visible');
@@ -667,8 +672,8 @@ test('原生双轴批量修改只更新编辑的轴', async ({ page }) => {
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
-    const a = app.add('layer', root),
-      b = app.add('layer', root);
+    const a = app.add('image', root),
+      b = app.add('image', root);
     app.update(b, (n: any) => {
       n.layout.height = { kind: 'fixed', value: 48 };
     });
@@ -693,17 +698,18 @@ test('原生 Frame 复制继承布局尺寸和子图层规则', async ({ page })
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
     const frame = app.add('frame', root),
-      child = app.add('layer', frame);
+      child = app.add('image', frame);
     app.makeNine(child);
     app.update(frame, (n: any) => {
       n.frame.direction = 'row';
+      n.frame.engineType = 'stack_panel';
       n.frame.padding = [4, 4, 4, 4];
     });
     app.update(child, (n: any) => {
       n.layout.width = { kind: 'fill' };
     });
     app.select([frame]);
-    const node = (window as any).OutlinerNode.uuids[app.state.doc.bindings[frame].elementId];
+    const node = (window as any).OutlinerNode.uuids[app.state.doc.bindings[frame].containerId];
     (window as any).moveOutlinerSelectionTo(node, node.parent, 0, { event: { altKey: true } });
     const frames = app.state.doc.nodes[root].children.map((id: string) => app.state.doc.nodes[id]);
     return {
@@ -730,7 +736,7 @@ test('内容预览使用原生对话框，取消不修改参数', async ({ page 
   await page.evaluate(async () => {
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio();
-    const id = app.add('layer', app.state.doc.roots[0]);
+    const id = app.add('image', app.state.doc.roots[0]);
     app.makeNine(id);
     window.BarItems.mcui_content_preview.trigger();
   });
@@ -748,8 +754,8 @@ test('选择图层自动同步顶面 UV 与贴图，不需进入绘画', async (
   const result = await page.evaluate(() => {
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
-    const a = app.add('layer', root),
-      b = app.add('layer', root);
+    const a = app.add('image', root),
+      b = app.add('image', root);
     app.update(a, (n: any) => {
       n.layout.width = { kind: 'fixed', value: 48 };
     });
@@ -761,7 +767,7 @@ test('选择图层自动同步顶面 UV 与贴图，不需进入绘画', async (
       uv: uv.vue.texture?.uuid,
       size: [uv.vue.texture?.uv_width, uv.vue.texture?.uv_height],
       faces: uv.getSelectedFaces(
-        window.Cube.all.find((c: any) => c.uuid === app.state.doc.bindings[a].elementId),
+        window.Cube.all.find((c: any) => c.uuid === app.state.doc.bindings[a].surfaceId),
       ),
       mode: window.Modes.selected.id,
       count: window.Texture.all.length,
@@ -943,7 +949,7 @@ test('直接绘制有外观的成品会保护像素，显式栅格化后可继�
   });
   const result = await page.evaluate(() => {
     const app = window.Blockbench.mcuiStudio.getStudio(),
-      id = app.add('layer');
+      id = app.add('image');
     app.update(id, (n: any) => {
       n.appearance = {
         fill: 'solid',
@@ -985,8 +991,8 @@ test('图形化自动布局：方向、九点对齐、两端分布及边距联�
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
-    const a = app.add('layer', root),
-      b = app.add('layer', root);
+    const a = app.add('image', root),
+      b = app.add('image', root);
     app.execute('准备布局预览', (doc: any) => {
       doc.nodes[root].layout.width = { kind: 'fixed', value: 180 };
       doc.nodes[root].layout.height = { kind: 'fixed', value: 110 };
@@ -1044,10 +1050,12 @@ test('多选边距只改一边；尺寸快捷规则、锚点和约束折叠', as
       b = app.add('frame', root);
     app.update(a, (n: any) => {
       n.frame.direction = 'row';
+      n.frame.engineType = 'stack_panel';
       n.frame.padding = [1, 2, 3, 4];
     });
     app.update(b, (n: any) => {
       n.frame.direction = 'row';
+      n.frame.engineType = 'stack_panel';
       n.frame.padding = [5, 6, 7, 8];
     });
     app.select([a, b]);
@@ -1090,8 +1098,8 @@ test('一键组成自动布局并打开布局标签，撤销恢复层级，卸�
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
-    const a = app.add('layer', root),
-      b = app.add('layer', root);
+    const a = app.add('image', root),
+      b = app.add('image', root);
     app.update(b, (n: any) => {
       n.layout.offset.x = 48;
     });
@@ -1124,8 +1132,8 @@ test('尺寸策略预检、键盘方向操作和切回自由布局保持位置',
     await window.Blockbench.mcuiStudio.newProject();
     const app = window.Blockbench.mcuiStudio.getStudio(),
       root = app.state.doc.roots[0];
-    app.add('layer', root);
-    app.add('layer', root);
+    app.add('image', root);
+    app.add('image', root);
     app.select([root]);
   });
   await page.locator('.panel_handle[panel_id="mcui_layout"]').click();

@@ -1,4 +1,5 @@
 import { UiGrid } from './ui-grid';
+import { pickNode, pickDrop, type PickNode, type DropTarget } from '../../application/targets';
 import type { Studio } from '../../application/studio';
 import { InteractionMachine } from '../../application/interaction';
 import { bounds, distances } from '../../domain/geometry';
@@ -31,6 +32,9 @@ export class ViewportController {
   >();
   private space = false;
   private hover: Id | null = null;
+  private dropTarget: DropTarget | null = null;
+  automaticPlacement = true;
+  private labelContext = document.createElement('canvas').getContext('2d');
   private alt = false;
   private pointerId: number | null = null;
   private machine: InteractionMachine;
@@ -59,9 +63,15 @@ export class ViewportController {
       onCanvasClick: (data: HostObject) => this.canvasClick(data),
       onCanvasMouseMove: (data: HostObject) => {
         if (!this.active()) return;
-        this.hover = data?.element ? this.nodeId(data.element.uuid) : null;
+        if (data?.event) this.hover = this.hit(data.event, bb.Preview.selected);
         if (data?.event) this.alt = data.event.altKey;
         this.draw();
+      },
+      onUnselect: () => {
+        this.machine?.cancel();
+        this.pointerId = null;
+        this.hover = null;
+        this.dropTarget = null;
       },
       modes: ['edit'],
       condition: () => !!bb.Project?.unhandled_root_fields?.mcui_studio,
@@ -69,6 +79,24 @@ export class ViewportController {
     this.disposables.add(this.tool);
     this.machine = new InteractionMachine(studio, { pan: (dx, dy) => this.pan(dx, dy) });
     this.disposables.add(studio.subscribe(() => this.draw()));
+    this.disposables.add(
+      bb.Blockbench.on('unselect_project', () => {
+        this.machine.cancel();
+        this.pointerId = null;
+        this.hover = null;
+        this.dropTarget = null;
+      }),
+    );
+    this.disposables.add(
+      bb.Blockbench.on('select_mode', () => {
+        if (!bb.Modes.edit) {
+          this.machine.cancel();
+          this.pointerId = null;
+          this.hover = null;
+          this.dropTarget = null;
+        }
+      }),
+    );
     this.disposables.add(
       bb.Blockbench.on('finish_selection_change', () => {
         if (!this.active()) return;
@@ -103,6 +131,8 @@ export class ViewportController {
       this.alt = false;
       this.machine.cancel();
       this.pointerId = null;
+      this.hover = null;
+      this.dropTarget = null;
       this.draw();
     });
     this.attach();
@@ -131,6 +161,8 @@ export class ViewportController {
   }
   setView(view: '2d' | '3d') {
     this.machine.cancel();
+    this.hover = null;
+    this.dropTarget = null;
     this.memory.views[this.currentView] = this.capture();
     const p = this.bb.Preview.selected,
       saved = this.memory.views[view];
@@ -169,8 +201,16 @@ export class ViewportController {
     p.camera.updateProjectionMatrix();
     p.controls.update();
   }
+  setAutomaticPlacement(value: boolean) {
+    this.machine.cancel();
+    this.dropTarget = null;
+    this.automaticPlacement = value;
+    this.draw();
+  }
   setInteraction(value: 'figma' | 'native') {
     this.machine.cancel();
+    this.hover = null;
+    this.dropTarget = null;
     this.studio.setInteraction(value);
     this.syncTool();
     this.draw();
@@ -192,7 +232,12 @@ export class ViewportController {
     );
   }
   private active() {
-    return this.navigationActive() && this.bb.Modes.edit && !this.studio.state.busy;
+    return (
+      this.navigationActive() &&
+      this.bb.Modes.edit &&
+      this.bb.Toolbox.selected === this.tool &&
+      !this.studio.state.busy
+    );
   }
   private world(clientX: number, clientY: number, preview = this.bb.Preview.selected): Point {
     const r = preview.canvas.getBoundingClientRect();
@@ -208,8 +253,8 @@ export class ViewportController {
     const r = preview.canvas.getBoundingClientRect(),
       nr = preview.node.getBoundingClientRect();
     return {
-      x: ((v.x + 1) * r.width) / 2 + r.left - nr.left,
-      y: ((1 - v.y) * r.height) / 2 + r.top - nr.top,
+      x: Math.round((((v.x + 1) * r.width) / 2 + r.left - nr.left) * 100) / 100,
+      y: Math.round((((1 - v.y) * r.height) / 2 + r.top - nr.top) * 100) / 100,
     };
   }
   private screenRect(r: Rect, p: HostObject): Rect {
@@ -224,21 +269,77 @@ export class ViewportController {
   }
   private nodeId(uuid: string): Id | null {
     const id = Object.entries(this.studio.state.doc.bindings).find(
-      ([, b]) => b.elementId === uuid,
+      ([, b]) => b.containerId === uuid || b.surfaceId === uuid,
     )?.[0];
     const n = id ? this.studio.state.scene.nodes[id] : undefined;
     return n?.visible && !n.locked ? id! : null;
   }
+  private labelText(name: string, width: number) {
+    if (!this.labelContext) return name;
+    let text = name;
+    while (
+      text.length > 1 &&
+      this.labelContext.measureText(text + (text === name ? '' : '…')).width > width - 12
+    )
+      text = Array.from(text).slice(0, -1).join('');
+    return text === name ? text : text + '…';
+  }
+  private local(event: MouseEvent, preview: HostObject): Point {
+    const rect = preview.node.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+  private pickNodes(preview: HostObject): PickNode[] {
+    const { doc, scene, selection } = this.studio.state;
+    if (this.labelContext) this.labelContext.font = '12px sans-serif';
+    return scene.order.map((id) => {
+      const n = doc.nodes[id]!,
+        resolved = scene.nodes[id]!,
+        rect = this.screenRect(resolved.rect, preview);
+      let level = 0,
+        parent = n.parent;
+      while (parent) {
+        level++;
+        parent = doc.nodes[parent]?.parent ?? null;
+      }
+      const label =
+        n.kind === 'frame' &&
+        (!n.parent ||
+          selection.includes(id) ||
+          this.hover === id ||
+          this.dropTarget?.parentId === id)
+          ? {
+              x: rect.x + 2,
+              y: rect.y - 22,
+              width: Math.min(
+                230,
+                Math.max(
+                  40,
+                  (this.labelContext?.measureText(n.name).width ?? n.name.length * 12) + 12,
+                ),
+              ),
+              height: 20,
+            }
+          : undefined;
+      return {
+        id,
+        kind: n.kind,
+        rect,
+        label,
+        rank: resolved.depth,
+        level,
+        disabled: !resolved.visible || resolved.locked || !!n.suspended,
+      };
+    });
+  }
   private hit(event: MouseEvent, preview: HostObject): Id | null {
-    const data = preview.raycast(event);
-    return data?.element ? this.nodeId(data.element.uuid) : null;
+    return pickNode(this.pickNodes(preview), this.local(event, preview));
   }
   private canvasClick(data: HostObject) {
     if (!this.active()) return;
     const e = data.event as PointerEvent,
       p = this.bb.Preview.selected;
     if (e.button !== 0 || this.space || e.ctrlKey || e.metaKey) return;
-    if (data.element && this.nodeId(data.element.uuid)) {
+    if (this.hit(e, p)) {
       this.pointerId = e.pointerId;
       p.node.setPointerCapture(e.pointerId);
       this.machine.down(this.input(e, p));
@@ -255,7 +356,25 @@ export class ViewportController {
   }
   private input(e: PointerEvent, preview: HostObject) {
     const world = this.world(e.clientX, e.clientY, preview);
+    const local = this.local(e, preview),
+      rect = preview.canvas.getBoundingClientRect();
+    const inside =
+      e.clientX >= rect.left &&
+      e.clientX <= rect.right &&
+      e.clientY >= rect.top &&
+      e.clientY <= rect.bottom;
+    this.dropTarget =
+      inside && this.machine.phase !== 'resize'
+        ? pickDrop(
+            this.studio.state.doc,
+            this.pickNodes(preview),
+            this.studio.state.selection,
+            local,
+            this.automaticPlacement,
+          )
+        : null;
     return {
+      drop: this.dropTarget,
       screen: { x: e.clientX, y: e.clientY },
       world,
       button: e.button,
@@ -307,7 +426,7 @@ export class ViewportController {
           )
             return;
           const handle = (e.target as HTMLElement).getAttribute?.('data-mcui-handle');
-          if (!handle && e.button === 0 && !this.space) return;
+          if (!handle && e.button === 0 && !this.space && !this.hit(e, p)) return;
           stop(e);
           (document.activeElement as HTMLElement)?.blur?.();
           p.controls.stopMovement?.();
@@ -335,7 +454,15 @@ export class ViewportController {
         p.node,
         'pointermove',
         ((e: PointerEvent) => {
-          if (!this.navigationActive() || this.pointerId === null) return;
+          if (!this.navigationActive()) return;
+          if (this.pointerId === null) {
+            if (this.active()) {
+              this.hover = this.hit(e, p);
+              this.alt = e.altKey;
+              this.draw();
+            }
+            return;
+          }
           const point = this.input(e, p);
           this.alt = e.altKey;
           this.hover = point.hit;
@@ -353,13 +480,20 @@ export class ViewportController {
         ((e: PointerEvent) => {
           if (this.pointerId !== e.pointerId) return;
           stop(e);
+          this.machine.move(this.input(e, p));
           this.machine.up();
+          this.dropTarget = null;
           this.pointerId = null;
           if (p.node.hasPointerCapture(e.pointerId)) p.node.releasePointerCapture(e.pointerId);
           this.draw();
         }) as EventListener,
         { capture: true },
       );
+      cleanup.listen(p.node, 'pointerleave', () => {
+        this.hover = null;
+        this.dropTarget = null;
+        this.draw();
+      });
       cleanup.listen(
         p.node,
         'pointercancel',
@@ -446,6 +580,8 @@ export class ViewportController {
       }
       this.machine.cancel();
       this.pointerId = null;
+      this.hover = null;
+      this.dropTarget = null;
       this.draw();
     }
     if (!this.active() || e.metaKey || e.ctrlKey) return;
@@ -472,7 +608,25 @@ export class ViewportController {
         }
         continue;
       }
-      const selection = this.active() ? this.studio.getSelectionBounds() : null;
+      const originalSelection = this.active() ? this.studio.getSelectionBounds() : null;
+      const delta = this.studio.movePreview;
+      const selection =
+        originalSelection && delta
+          ? {
+              ...originalSelection,
+              x: originalSelection.x + delta.x,
+              y: originalSelection.y + delta.y,
+            }
+          : originalSelection;
+      const nodes = this.pickNodes(p),
+        drop = this.machine.phase === 'move' ? this.dropTarget : null;
+      const hovered =
+        this.active() &&
+        this.machine.phase === 'idle' &&
+        this.hover &&
+        !this.studio.state.selection.includes(this.hover)
+          ? nodes.find((n) => n.id === this.hover)
+          : undefined;
       const ms =
         selection && this.alt && this.hover && !this.studio.state.selection.includes(this.hover)
           ? distances(selection, this.studio.state.scene.nodes[this.hover]!.rect)
@@ -481,6 +635,24 @@ export class ViewportController {
         unit = this.screen({ x: 1, y: 1 }, p);
       const spacing = Math.abs(unit.x - origin.x);
       const model = {
+        hover: hovered?.rect ?? null,
+        labels: this.active()
+          ? nodes
+              .filter((n) => !!n.label && this.studio.state.scene.nodes[n.id]?.visible)
+              .map((n) => ({
+                id: n.id,
+                name: this.labelText(this.studio.state.doc.nodes[n.id]!.name, n.label!.width),
+                rect: n.label!,
+              }))
+          : [],
+        drop:
+          drop && this.active()
+            ? {
+                rect: nodes.find((n) => n.id === drop.parentId)!.rect,
+                name: this.studio.state.doc.nodes[drop.parentId]!.name,
+                line: drop.line,
+              }
+            : null,
         grid:
           spacing >= 8
             ? { x: origin.x, y: origin.y, spacing, opacity: Math.min(0.16, (spacing - 8) / 100) }

@@ -1,78 +1,48 @@
-# 架构与 Blockbench 升级适配（v0.2）
+# v0.5 架构与 Blockbench 适配
 
-## 依赖方向
+## 依赖边界
 
-```text
-原生大纲／元素／工具栏／附加标签
-             ↓ 宿主适配器
-Application（命令、事务、差异协调） → Domain（布局、表达式、像素）
-             ↓ 纯数据端口
-原生 Cube／Group／Texture／Undo
-```
+Domain/Application 保持不依赖 Blockbench、Three.js、Electron、Vue 或 DOM。业务层提供 Image／Frame 文档、布局计算、像素生成、命中策略和编辑事务；所有宿主对象访问集中在 Blockbench 适配器。
 
-Domain/Application 不引用 Blockbench、Three.js、Electron 或 DOM。常规界面使用原生注册机制；不再维护独立图层树或自制工作台，已移除 Preact。Presentation 只保留必要的 SVG 视口辅助。
+文档保持 schemaVersion 1，但严格接受当前结构，不提供旧数据迁移。文件载体仍为 Generic Model `.bbmodel` 的 `unhandled_root_fields.mcui_studio`，标准几何和内嵌贴图负责无插件显示。
+
+## Image／Frame 与角色绑定
+
+Image 与 Frame 都有稳定逻辑 ID、children 和 LayoutSpec。Image 有内容与外观，可包含 Image／Frame；Frame 仅负责布局，FrameSpec.engineType 明确为 panel 或 stack_panel，且必须与 direction 相符。Image 的 Hug 取自身素材尺寸；Frame 的 Hug 计算真实流式子项。
+
+NativeBinding 保存 containerId、可选 surfaceId、textureId 和指纹。每个 Image 对应一个原生 Group＋内容 Cube，Frame 对应一个原生 Group。逻辑 ID 不要求等于任何原生 UUID；内容 Cube 不进入逻辑 children 或布局计算。
+
+原生场景读取折叠受管理的内容 Cube，返回业务树快照。原生新增 Cube 在完成原生编辑前包装为 Image，新增 Group 成为 Frame。原生复制通过临时来源／角色标记识别对应内容载体，重绑 UUID 并生成独立成品贴图；标记不作为保存权威数据，编译时剥离。
+
+内容载体缺失、移出，或 UV／贴图／显示状态被独立修改时暂停相关规则，保留现场；显式重新生成可修复载体。三维旋转继续使用差异保护。未安装插件期间的修改不被自动烘焙覆盖。
 
 ## 宿主接触面
 
-- `runtime.ts`：宿主门面、能力检测、资源释放。
-- `native-host.ts`：原生对象和层级快照、内嵌保存、Undo、绘画会话。
-- `properties.ts`：Property 注册、原生元素表单、InputForm 附加标签、草稿输入及自动打开元素标签。
-- `native-fields.ts`：仅宿主使用的临时字段与复制来源标记。
-- `viewport.ts`：注册 Tool、原生命中／框选、相机、必要的二维手势。
-- `preview-dialog.ts`：原生 Dialog 中的内容预览。
-- `install.ts`：ModelLoader、原生命令／工具栏／菜单、生命周期装配。
+- NativeHost：原生对象生成、快照、纹理与绘画会话、历史和临时网格位移。
+- OutlinerView：注册 node_display_rules，隐藏内容载体，设置受管理 Group 实例图标；退出、切换项目及卸载恢复原始属性。没有替换 Vue 树或覆盖宿主原型。
+- PropertyBridge／注册 FormElement：沿用原生元素、布局和内容标签。Image 与 Frame 的属性代理均注册在 Group 上，内容 Cube 只保留临时角色标记。
+- ViewportController：屏幕／世界坐标转换、Frame 名称测量、指针事件、相机和 SVG 辅助。
+- 应用层 targets：纯数据的点击与放入候选判断，分别处理名称／边框／图像命中、层级优先级、Stack 插入位置及排除选区后代。
+- tree-editing：纯数据改父级和世界矩形保留，重算百分比对应的像素分量。
 
-字段声明只存在于适配层。原生“元素”保留位置 X/Y、尺寸 W/H 两行；布局约束和内容参数分别在原生附加标签中。位置和尺寸的双轴控件复用原生文本输入和 FormElement 注册，只补充草稿提交、表达式校验与轴标记，不引入第二套 UI 框架。
+大纲本身、拖拽、菜单、框选与宿主显示能力继续复用原生机制。SceneSnapshot 的 selection 将原生 Group 递归选中的内容合并成显式逻辑选区。绘画时仅选择 Image 自己的内容 Cube，退出绘画恢复容器选区。
 
-## 结构与状态
+## 事务与预览
 
-原生大纲负责结构操作。NativeSceneSnapshot 包含根节点顺序、完整父子关系、同级索引、稳定 UUID、名称、可见性、锁定及显式选择。应用层根据快照更新规范化业务树；不能仅凭 Y 高度判断排序。
+应用命令拥有独立 Undo；原生属性、大纲及原生新增操作在既有 Undo 内协调，禁止嵌套事务。Undo 初始快照必须在开始时包含 selection，结束阶段不能临时追加过期选区快照。
 
-活动会话中的排序、换父级、原生新增与 Option 复制是正常操作。原生复制通过临时来源标记关联业务配置，再分配新的对象和成品贴图。冷启动发现未安装插件期间的差异仍保留当前原生结果并暂停冲突规则。
+移动手势开始时仅保留逻辑文档快照，通过 ScenePort.previewMove 改变 Three 场景的临时显示位置。不写文档、不重烘焙，也不创建 Undo 编辑。放入目标基于原始逻辑场景，排除选区及后代，避免移动载体遮挡检测。
 
-原生 Group 与 Cube 上的注册属性是展示／输入代理，不是权威配置。保存时清理代理字段和复制来源标记；权威数据继续在 `unhandled_root_fields.mcui_studio` 中。旧 v0.1 项目保持可读，显示结果仍由标准对象与内嵌贴图承担。
+松手时恢复临时显示，再以单次事务提交移动／排序／换父级及派生布局。无合法目标保留父级；失败或取消恢复开始状态。缩放继续使用已有受控编辑事务。临时状态和偏好不写入模型。
 
-## 两种事务所有者
+自动放入默认开启，使用合并写入的本机偏好。关闭仅禁止视口换父级；Stack 内排序及大纲拖入仍可用。普通项目、绘画和透视模式保留宿主行为。
 
-- 应用事务：插件命令、内容导入、八点缩放等，由应用开启／提交 Undo。
-- 宿主事务：原生元素表单、大纲和变换工具，使用 `executeWithinHostEdit` 加入现有 Undo。
+## 像素与视图辅助
 
-先准备并验证候选文档，再写入原生结果。派生布局、像素、UI 元数据与对象变更必须进入同一编辑记录。不能在属性回调中嵌套开启 Undo。
+图片适配、九宫格、渐变和描边继续生成标准纹理；rasterSize 将贴图分辨率与几何尺寸解耦。自定义 SVG 只绘制像素网格、选中框、悬停轮廓、名称、测距和插入提示，不进入模型或原生截图。
 
-扩展宿主快照时不追加 `selection: true`：原生选择快照必须在 initEdit 开始时建立，否则会使用过期选区。独立选择操作使用原生选择历史；Group 的显式选择取 selected_groups，不能把聚合的 selected 状态当成用户选中 Frame。
+Frame 名称使用稳定 DOM 节点与固定屏幕字号，屏幕坐标量化到 0.01px 避免相机浮点抖动引发持续重建。原生网格隐藏通过独立 UiGrid 适配器处理，所有状态可在卸载时恢复。
 
-表达式只在 Enter 或失焦后验证、提交；不完整输入不进入模型。多选双轴输入只更新实际编辑的轴。坐标采用像素分量及可选百分比分量，百分比参照父级，旧文件缺少分量时视为零。
+## 宿主基线与验证
 
-## 原生输入复用
-
-普通点击使用 Preview 的命中和原生选择方法；空白框选使用 Preview.startSelRect 与原生选区历史。插件只处理 Shift 映射、元素本体直拖、八点控制、测距和连续捏合缩放。原生移动／缩放继续使用宿主 TransformerModule，并在结束事务时同步派生结果。
-
-源图编辑仍使用原生图片项目。应用／取消注册为原生绘画工具栏及菜单命令。没有运行时九宫格 shader 或自定义最终渲染器。
-
-## 生命周期与升级
-
-基线为 Blockbench 5.2.1 / e2ede0809ee6bc91f374ac7e00d34cffbdf86a14。主要依据：element_panel.ts、form.ts、property.ts、outliner.js、undo.js、model_loader.ts、preview.ts 和 OrbitControls.js。
-
-所有注册项有卸载路径。属性注销后清理对应生成表单字段；原生其他属性处理器保持工作。附加标签与命令仅在相关上下文显示，用户的全局快捷键不被永久修改。
-
-升级时先更换隔离测试宿主，再运行依赖边界、类型、内核和真实宿主测试。接口差异只能进入适配器；不要把宿主类型传入业务层，也不要覆盖宿主原型。
-
-## v0.3 外观、分辨率与视图
-
-Appearance 是纯数据配置，raster.ts 负责 RGBA 填充、双色线性渐变与向内描边合成。结果仍为普通纹理。栅格化保留原始规则供恢复，将合成结果作为新的绘画源，清除实时外观并归一化不透明度，避免二次叠加。
-
-可选 rasterSize 将纹理分辨率与几何尺寸解耦；渲染缓存键使用纹理尺寸，因此仅改变几何不生成像素。导入图片默认保留高分辨率；Shift 等比缩放锁定当前贴图尺寸。九宫格继续按 UI 目标尺寸生成。原生分层绘画也使用独立纹理尺寸。
-
-ui-grid.ts 是单独的宿主适配器，为原生网格和原点辅助分配空闲相机图层，仅顶视相机不渲染它们；透视及卸载恢复原始 mask 和方向控件样式，不修改全局设置或宿主原型。像素网格为有缩放阈值的 SVG 辅助，跟随世界坐标原点，不进入模型或截图。
-
-原生选择同步通过 UVEditor 的面选择与 Texture.select/loadData 完成，加入重入保护和选择缓存，避免选择递归和每帧抢占用户手动操作。
-
-## v0.4 图形化布局编辑
-
-`layout-fields.ts` 注册三个小型 FormElement：九点锚点、方向感知的九点对齐与两端分布、四边内边距。其余方向／定位／尺寸模式复用原生 inline_select，仍由原生 Panel/InputForm 组织，不引入独立工作台或 UI 框架。样式局限插件控件，所有注册项与样式在卸载时释放。
-
-`layout-authoring.ts` 为纯业务编辑操作：关闭自动布局、流式转绝对定位、尺寸模式切换与候选模式预检。预检只计算布局，不复制源图或生成像素。GUI 不保存另一份布局规则；状态读写继续使用 FrameSpec/LayoutSpec。窗口约束的折叠与边距联动属于临时 UI 偏好。
-
-内边距使用 changedSide 临时标记，独立多选修改仅覆盖编辑边；草稿有选区归属检查。九点对齐一次修改 justify/align，仍为一次应用事务。方向切换及定位转换同时更新必要偏移／固定尺寸，避免跳动。
-
-Studio.wrapAutoLayout 在单次事务中重建层级、推断方向和间距、固定子项尺寸并创建 Hug Frame。拒绝跨父级、锁定或暂停的选区；生成对象仍为原生 Group/Cube。布局算法和文件 schema 不变。
+Blockbench 5.2.1 / e2ede0809ee6bc91f374ac7e00d34cffbdf86a14。升级时先在隔离缓存宿主验证角色绑定、原生编辑历史、大纲过滤、绘画、选择和指针取消，再替换适配器中的具体接口。

@@ -4,6 +4,7 @@
 export type HostObject = any;
 export interface HostRuntime {
   Blockbench: HostObject;
+  Vue: HostObject;
   Project: HostObject;
   ModelProject: HostObject;
   ModelLoader: HostObject;

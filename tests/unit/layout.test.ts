@@ -8,9 +8,9 @@ function fixture() {
     p = createNode('p', '父', 'frame', { x: 0, y: 0, width: 101, height: 50 });
   d.nodes.p = p;
   d.roots = ['p'];
-  p.frame = { ...defaultFrame(), direction: 'row', gap: 0 };
+  p.frame = { ...defaultFrame(), engineType: 'stack_panel', direction: 'row', gap: 0 };
   for (const id of ['a', 'b']) {
-    const n = createNode(id, id, 'layer', { x: 0, y: 0, width: 20, height: 10 });
+    const n = createNode(id, id, 'image', { x: 0, y: 0, width: 20, height: 10 });
     n.parent = 'p';
     d.nodes[id] = n;
     p.children.push(id);

@@ -10,7 +10,7 @@ import type { Id, UiDocument, UiNode } from '../../domain/types';
 import { defaultAppearance, defaultFrame } from '../../domain/types';
 import { topSelection } from '../../domain/document';
 import { formatSize, parseSize, formatOffset, parseOffset } from '../../domain/expression';
-import { FIELD_PREFIX, SOURCE_MARKER } from './native-fields';
+import { FIELD_PREFIX, ROLE_MARKER, SOURCE_MARKER } from './native-fields';
 import { Disposables, type HostObject, type HostRuntime } from './runtime';
 
 interface Field {
@@ -146,7 +146,7 @@ const all: Field[] = [
     label: '背景填充',
     type: 'select',
     options: { none: '无', solid: '纯色', linear: '线性渐变' },
-    applies: (n) => n.kind === 'layer',
+    applies: (n) => n.kind === 'image',
     read: (n) => n.appearance?.fill ?? 'none',
     write: (n, v) => {
       (n.appearance ??= defaultAppearance()).fill = v;
@@ -159,7 +159,7 @@ const all: Field[] = [
       label: ['填充颜色', '渐变终点', '描边颜色'][i]!,
       type: 'color',
       applies: (n) =>
-        n.kind === 'layer' &&
+        n.kind === 'image' &&
         (key === 'strokeColor' ||
           (key === 'endColor'
             ? n.appearance?.fill === 'linear'
@@ -189,7 +189,7 @@ const all: Field[] = [
     type: 'number',
     propertyType: 'number',
     min: 0,
-    applies: (n) => n.kind === 'layer',
+    applies: (n) => n.kind === 'image',
     read: (n) => n.appearance?.strokeWidth ?? 0,
     write: (n, v) => {
       (n.appearance ??= defaultAppearance()).strokeWidth = v;
@@ -416,6 +416,7 @@ export class PropertyBridge {
   private sizeErrors = new Map<string, string | null>();
   readonly fieldIds = new Set([
     SOURCE_MARKER,
+    ROLE_MARKER,
     FIELD_PREFIX + 'justify',
     FIELD_PREFIX + 'align',
     ...all.map((f) => FIELD_PREFIX + f.id),
@@ -440,6 +441,8 @@ export class PropertyBridge {
       this.life.add(
         new bb.Property(ctor, 'string', SOURCE_MARKER, { default: '', exposed: false }),
       );
+      this.life.add(new bb.Property(ctor, 'string', ROLE_MARKER, { default: '', exposed: false }));
+      if (type === 'cube') continue;
       for (const field of all) this.register(type, ctor, field);
       this.register(type, ctor, {
         id: 'selection_info',
@@ -479,8 +482,8 @@ export class PropertyBridge {
         nodes.length > 0 &&
         nodes.every(
           (n) =>
-            (n.kind === 'layer' || n.kind === 'frame') &&
-            (n.kind === 'layer') === (nodes[0]!.kind === 'layer'),
+            (n.kind === 'image' || n.kind === 'frame') &&
+            (n.kind === 'image') === (nodes[0]!.kind === 'image'),
         )
       );
     };
@@ -519,7 +522,9 @@ export class PropertyBridge {
               const parent = n.parent ? this.current()?.state.doc.nodes[n.parent] : undefined;
               return (
                 !!parent &&
-                (n.layout.positioning === 'absolute' || parent.frame?.direction === 'free')
+                (n.layout.positioning === 'absolute' ||
+                  parent.kind === 'image' ||
+                  parent.frame?.direction === 'free')
               );
             }
             if (field.id === 'positioning') return !!n.parent;
@@ -542,7 +547,7 @@ export class PropertyBridge {
         label: '像素编辑',
         buttons: ['一键栅格化'],
         description: '将当前填充、渐变、描边与图片合成为可绘制像素，保留显示和贴图尺寸。可撤销。',
-        condition: () => this.targets().length === 1 && this.targets()[0]?.kind === 'layer',
+        condition: () => this.targets().length === 1 && this.targets()[0]?.kind === 'image',
         click: () => {
           const n = this.targets()[0];
           if (n) this.current()?.flatten(n.id);
@@ -560,7 +565,7 @@ export class PropertyBridge {
         (kind !== 'content' ||
           fields.some((f) => this.targets().every((n) => !f.applies || f.applies(n)))),
       display_condition: () =>
-        applicable() && (kind !== 'content' || this.targets().every((n) => n.kind === 'layer')),
+        applicable() && (kind !== 'content' || this.targets().every((n) => n.kind === 'image')),
       default_position: {
         slot: 'right_bar',
         attached_to: this.bb.Interface.Panels.element.getHostPanel()?.id ?? 'element',
@@ -637,7 +642,10 @@ export class PropertyBridge {
     const app = this.current();
     if (!app) return [];
     const lookup = new Map(
-      Object.entries(app.state.doc.bindings).map(([id, b]) => [b.elementId, id]),
+      Object.entries(app.state.doc.bindings).flatMap(
+        ([id, b]) =>
+          [[b.containerId, id], ...(b.surfaceId ? [[b.surfaceId, id]] : [])] as [string, string][],
+      ),
     );
     const raw = [...this.bb.Outliner.selected, ...this.bb.Group.multi_selected];
     if (raw.some((e) => !lookup.has(e.uuid))) return [];
@@ -650,7 +658,7 @@ export class PropertyBridge {
     if (node?.uuid) {
       const app = this.current()!;
       const id = Object.entries(app.state.doc.bindings).find(
-        ([, b]) => b.elementId === node.uuid,
+        ([, b]) => b.containerId === node.uuid,
       )?.[0];
       const n = id ? app.state.doc.nodes[id] : undefined;
       return !!n && (!field.applies || field.applies(n));
@@ -658,11 +666,7 @@ export class PropertyBridge {
     const targets = this.targets();
     return (
       targets.length > 0 &&
-      targets.every(
-        (n) =>
-          (type === 'cube' ? n.kind === 'layer' : n.kind === 'frame') &&
-          (!field.applies || field.applies(n)),
-      )
+      targets.every((n) => type === 'group' && (!field.applies || field.applies(n)))
     );
   }
   private register(type: string, ctor: HostObject, field: Field) {
@@ -694,7 +698,7 @@ export class PropertyBridge {
                       .map(
                         (e) =>
                           Object.entries(app.state.doc.bindings).find(
-                            ([, b]) => b.elementId === e.uuid,
+                            ([, b]) => b.containerId === e.uuid,
                           )?.[0],
                       )
                       .filter((id): id is string => !!id);
@@ -717,11 +721,19 @@ export class PropertyBridge {
     if (this.disposed) return;
     for (const [id, binding] of Object.entries(doc.bindings)) {
       const object =
-        this.bb.Project?.elements.find((e: HostObject) => e.uuid === binding.elementId) ??
-        this.bb.Project?.groups.find((e: HostObject) => e.uuid === binding.elementId);
+        this.bb.Project?.elements.find((e: HostObject) => e.uuid === binding.containerId) ??
+        this.bb.Project?.groups.find((e: HostObject) => e.uuid === binding.containerId);
       const node = doc.nodes[id];
       if (!object || !node) continue;
       object[SOURCE_MARKER] = id;
+      object[ROLE_MARKER] = 'container';
+      const surface = this.bb.Project?.elements.find(
+        (e: HostObject) => e.uuid === binding.surfaceId,
+      );
+      if (surface) {
+        surface[SOURCE_MARKER] = id;
+        surface[ROLE_MARKER] = 'content';
+      }
       for (const f of all) object[FIELD_PREFIX + f.id] = f.read(node) ?? '';
       object[FIELD_PREFIX + 'selection_info'] =
         `已选择 ${this.targets().length} 个对象；显示首个值，修改统一应用`;
@@ -745,7 +757,7 @@ export class PropertyBridge {
       const panel = this.bb.Interface.Panels.element;
       const values: Record<string, unknown> = {};
       for (const n of targets) {
-        const type = n.kind === 'layer' ? 'cube' : 'group';
+        const type = 'group';
         for (const f of all) {
           const id = `${type}__${FIELD_PREFIX}${f.id}`;
           if (!(id in values)) values[id] = f.read(n) ?? '';
@@ -824,7 +836,7 @@ export class PropertyBridge {
         key &&
         key !== this.selectionKey &&
         this.bb.Modes.edit &&
-        targets.some((n) => n.kind === 'layer' || n.kind === 'frame')
+        targets.some((n) => n.kind === 'image' || n.kind === 'frame')
       ) {
         const host = panel.getHostPanel?.() ?? panel;
         host.selectTab(panel);

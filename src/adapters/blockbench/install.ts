@@ -3,6 +3,7 @@ import { clone, descendants, topSelection } from '../../domain/document';
 import { createNode, fixed } from '../../domain/types';
 import type { UiDocument } from '../../domain/types';
 import { imagePort, blobImage } from '../../platform/browser/images';
+import { OutlinerView } from './outliner-view';
 import { PropertyBridge } from './properties';
 import { showContentPreview } from './preview-dialog';
 import { NativeHost, METADATA_KEY } from './native-host';
@@ -42,9 +43,20 @@ export function install(bb: HostRuntime) {
     bb.BARS.updateConditions();
   }
   const get = () => (bb.Project ? apps.get(bb.Project.uuid) : undefined);
+  const outlinerView = new OutlinerView(bb);
+  life.add(() => outlinerView.dispose());
   const properties = new PropertyBridge(bb, () => get()?.app ?? null);
   life.add(() => properties.dispose());
-  let interactionSelect: HostObject, viewSelect: HostObject;
+  let interactionSelect: HostObject, viewSelect: HostObject, autoPlaceSelect: HostObject;
+  const preferences = () => {
+    try {
+      return JSON.parse(localStorage.getItem('mcui_preferences') ?? '{}');
+    } catch {
+      return {};
+    }
+  };
+  const savePreferences = (patch: HostObject) =>
+    localStorage.setItem('mcui_preferences', JSON.stringify({ ...preferences(), ...patch }));
   async function activate() {
     const generation = ++token,
       project = bb.Project;
@@ -52,6 +64,7 @@ export function install(bb: HostRuntime) {
     viewport?.dispose();
     viewport = null;
     current = null;
+    outlinerView.update(null);
     if (!project?.unhandled_root_fields?.[METADATA_KEY]) return;
     try {
       let entry = apps.get(project.uuid);
@@ -61,12 +74,18 @@ export function install(bb: HostRuntime) {
         if (!doc) return;
         const app = new Studio(host, imagePort, doc);
         host.onSourceSession = sourceSession;
-        host.onBeforeViewUpdate = (doc) => properties.hydrate(doc);
+        host.onBeforeViewUpdate = (doc) => {
+          properties.hydrate(doc);
+          outlinerView.update(doc);
+        };
         entry = { app, host };
         apps.set(project.uuid, entry);
         life.add(
           app.subscribe(() => {
-            if (host.active()) properties.refresh(false);
+            if (host.active()) {
+              properties.refresh(false);
+              outlinerView.update(app.state.doc);
+            }
           }),
         );
         await host.prepareSources();
@@ -77,9 +96,12 @@ export function install(bb: HostRuntime) {
       }
       if (generation !== token || bb.Project !== project) return;
       current = entry.app;
+      outlinerView.update(current.state.doc);
       if (!viewMemory.has(project.uuid)) viewMemory.set(project.uuid, { views: {} });
       viewport = new ViewportController(bb, current, viewMemory.get(project.uuid)!);
-      const saved = JSON.parse(localStorage.getItem('mcui_preferences') ?? '{}');
+      const saved = preferences();
+      viewport.automaticPlacement = saved.autoPlace !== false;
+      autoPlaceSelect?.set(viewport.automaticPlacement ? 'on' : 'off');
       viewport.setInteraction(saved.interaction === 'native' ? 'native' : 'figma');
       viewport.setView(current.state.view);
       interactionSelect?.set(current.state.interaction);
@@ -97,12 +119,18 @@ export function install(bb: HostRuntime) {
     const host = new NativeHost(bb, project),
       app = Studio.fresh(host, imagePort);
     host.onSourceSession = sourceSession;
-    host.onBeforeViewUpdate = (doc) => properties.hydrate(doc);
+    host.onBeforeViewUpdate = (doc) => {
+      properties.hydrate(doc);
+      outlinerView.update(doc);
+    };
     host.write(app.state.doc);
     apps.set(project.uuid, { app, host });
     life.add(
       app.subscribe(() => {
-        if (host.active()) properties.refresh(false);
+        if (host.active()) {
+          properties.refresh(false);
+          outlinerView.update(app.state.doc);
+        }
       }),
     );
     const id = imagePort.id();
@@ -156,7 +184,7 @@ export function install(bb: HostRuntime) {
     const newIds = new Map(Object.keys(source.nodes).map((id) => [id, imagePort.id()]));
     const selected =
       app.state.selection.length === 1 ? app.state.doc.nodes[app.state.selection[0]!] : undefined;
-    const parent = selected?.kind !== 'layer' ? (selected?.id ?? null) : selected.parent;
+    const parent = selected?.id ?? null;
     // Decode before an atomic command so textures are never published partially.
     const addedAssets = Object.values(source.assets);
     return Promise.all(addedAssets.map((a) => imagePort.decode(a.png))).then(async () => {
@@ -170,12 +198,17 @@ export function install(bb: HostRuntime) {
     const now = Date.now();
     if (now - lastPaste < 200) return;
     lastPaste = now;
+    const destination = app.state.selection.length === 1 ? app.state.selection[0]! : null;
     try {
       if (event?.clipboardData) {
         const files = [...event.clipboardData.files].filter((f) => f.type.startsWith('image/'));
         if (files.length) {
           for (let i = 0; i < files.length; i++)
-            await app.paste(await blobImage(files[i]!), forceNew || files.length > 1);
+            await app.paste(
+              await blobImage(files[i]!),
+              forceNew || files.length > 1,
+              files.length > 1 ? destination : undefined,
+            );
           return;
         }
         const text = event.clipboardData.getData('text/plain');
@@ -195,7 +228,11 @@ export function install(bb: HostRuntime) {
       }
       if (images.length) {
         for (const image of images)
-          await app.paste(await blobImage(image), forceNew || images.length > 1);
+          await app.paste(
+            await blobImage(image),
+            forceNew || images.length > 1,
+            images.length > 1 ? destination : undefined,
+          );
       } else if (text.startsWith('MCUI:')) await pasteNodes(JSON.parse(text.slice(5)), app);
       else app.report('剪贴板不包含图片或 UI 图层，可使用“导入图片”。');
     } catch (e) {
@@ -212,7 +249,13 @@ export function install(bb: HostRuntime) {
     input.onchange = async () => {
       try {
         const files = [...(input.files ?? [])];
-        for (const file of files) await app.paste(await blobImage(file), files.length > 1);
+        const destination = app.state.selection.length === 1 ? app.state.selection[0]! : null;
+        for (const file of files)
+          await app.paste(
+            await blobImage(file),
+            files.length > 1,
+            files.length > 1 ? destination : undefined,
+          );
       } catch (e) {
         app.report(e);
       }
@@ -227,10 +270,10 @@ export function install(bb: HostRuntime) {
     condition = () => !!current,
   ) => new bb.Action(id, { name, icon, condition, click });
   const selectedLayer = () =>
-    !!current && properties.targets().length === 1 && properties.targets()[0]?.kind === 'layer';
+    !!current && properties.targets().length === 1 && properties.targets()[0]?.kind === 'image';
   const parent = () => {
     const n = properties.targets()[0];
-    return n?.kind === 'layer' ? n.parent : (n?.id ?? null);
+    return n?.id ?? null;
   };
   const withLayer = (fn: (app: Studio, id: string) => void) => {
     const n = properties.targets()[0];
@@ -250,15 +293,22 @@ export function install(bb: HostRuntime) {
       },
       () => !!current && bb.Modes.edit && properties.targets().length > 0,
     ),
-    command('mcui_add_layer', '新增 UI 绘画图层', 'add_photo_alternate', () =>
-      current?.add('layer', parent()),
+    command('mcui_add_layer', '新增 Image', 'add_photo_alternate', () =>
+      current?.add('image', parent()),
     ),
     command('mcui_add_frame', '新增 UI Frame', 'dashboard_customize', () =>
       current?.add('frame', parent()),
     ),
-    command('mcui_add_group', '新增 UI 组', 'create_new_folder', () =>
-      current?.add('group', parent()),
+    command('mcui_add_sibling', '新增同级 Image', 'add_photo_alternate', () =>
+      current?.add('image', properties.targets()[0]?.parent ?? null),
     ),
+    command('mcui_show_native', '查看／隐藏原生结构', 'account_tree', () => {
+      outlinerView.raw = !outlinerView.raw;
+      outlinerView.update(current?.state.doc ?? null);
+    }),
+    command('mcui_paste_child', '粘贴图片为子图层', 'content_paste', () => {
+      void paste(true);
+    }),
     command(
       'mcui_edit_source',
       'UI：绘制／编辑源图',
@@ -417,7 +467,7 @@ export function install(bb: HostRuntime) {
     condition: () => !!current,
     onChange: (item: HostObject) => {
       viewport?.setInteraction(item.value);
-      localStorage.setItem('mcui_preferences', JSON.stringify({ interaction: item.value }));
+      savePreferences({ interaction: item.value });
     },
   });
   viewSelect = new bb.BarSelect('mcui_view', {
@@ -428,7 +478,18 @@ export function install(bb: HostRuntime) {
     condition: () => !!current,
     onChange: (item: HostObject) => viewport?.setView(item.value),
   });
-  for (const widget of [interactionSelect, viewSelect]) {
+  autoPlaceSelect = new bb.BarSelect('mcui_auto_place', {
+    name: '自动放入',
+    icon: 'drive_file_move',
+    value: preferences().autoPlace === false ? 'off' : 'on',
+    options: { on: '自动放入：开', off: '自动放入：关' },
+    condition: () => !!current,
+    onChange: (item: HostObject) => {
+      if (viewport) viewport.setAutomaticPlacement(item.value === 'on');
+      savePreferences({ autoPlace: item.value === 'on' });
+    },
+  });
+  for (const widget of [interactionSelect, viewSelect, autoPlaceSelect]) {
     bb.Toolbars.main_tools.add(widget);
     life.add(() => {
       bb.Toolbars.main_tools.remove(widget);
@@ -436,7 +497,13 @@ export function install(bb: HostRuntime) {
     });
   }
   const byId = (id: string) => actions.find((a) => a.id === id)!;
-  for (const id of ['mcui_add_layer', 'mcui_add_frame', 'mcui_wrap_layout', 'mcui_import_image']) {
+  for (const id of [
+    'mcui_add_layer',
+    'mcui_add_frame',
+    'mcui_wrap_layout',
+    'mcui_import_image',
+    'mcui_show_native',
+  ]) {
     const action = byId(id);
     bb.Toolbars.outliner.add(action);
     bb.BarItems.add_element.side_menu.addAction(action);
@@ -453,6 +520,11 @@ export function install(bb: HostRuntime) {
   for (const ctor of [bb.Cube, bb.Group])
     for (const id of [
       'mcui_wrap_layout',
+      'mcui_add_layer',
+      'mcui_add_sibling',
+      'mcui_paste_child',
+      'mcui_add_frame',
+      'mcui_show_native',
       'mcui_edit_source',
       'mcui_nine_slice',
       'mcui_content_preview',
@@ -538,7 +610,8 @@ export function install(bb: HostRuntime) {
       const app = current;
       void (async () => {
         try {
-          for (const file of files) await app.paste(await blobImage(file), true);
+          const destination = app.state.selection.length === 1 ? app.state.selection[0]! : null;
+          for (const file of files) await app.paste(await blobImage(file), true, destination);
         } catch (error) {
           app.report(error);
         }
@@ -572,14 +645,7 @@ export function install(bb: HostRuntime) {
     bb.Blockbench.on('update_selection', () => {
       const entry = get();
       if (!entry || entry.app.applying) return;
-      const selected = new Set(
-        [...bb.Outliner.selected, ...bb.Group.multi_selected].map((e: HostObject) => e.uuid),
-      );
-      entry.app.reflectSelection(
-        Object.entries(entry.app.state.doc.bindings)
-          .filter(([, b]) => selected.has(b.elementId))
-          .map(([id]) => id),
-      );
+      entry.app.reflectSelection(entry.host.scene(entry.app.state.doc).selection);
       entry.host.syncSelectedTexture(entry.app.state.doc, entry.app.state.selection);
       properties.refresh();
     }),
@@ -590,7 +656,13 @@ export function install(bb: HostRuntime) {
       life.add(() => clearTimeout(timer));
     }),
   );
-  life.add(bb.Blockbench.on('select_mode', () => properties.refresh()));
+  life.add(
+    bb.Blockbench.on('select_mode', () => {
+      const entry = get();
+      if (entry) entry.host.restorePaintSelection(entry.app.state.doc);
+      properties.refresh();
+    }),
+  );
   life.add(
     bb.Codecs.project.on('compile', ({ model }: HostObject) => properties.stripSerialized(model)),
   );
@@ -645,7 +717,7 @@ export function install(bb: HostRuntime) {
   );
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.4.0',
+    version: '0.5.0',
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,

@@ -5,7 +5,7 @@ import type { HostObject, HostRuntime } from './runtime';
 import { hashString } from './runtime';
 import { imagePort } from '../../platform/browser/images';
 import { hasAppearance, renderPixels } from '../../domain/raster';
-import { SOURCE_MARKER } from './native-fields';
+import { ROLE_MARKER, SOURCE_MARKER } from './native-fields';
 export const METADATA_KEY = 'mcui_studio';
 interface Carrier {
   schemaVersion: 1;
@@ -124,27 +124,98 @@ export class NativeHost implements HostPort {
   private pixelFingerprint(texture: HostObject): string {
     return texture ? hashString(texture.getDataURL()) : '';
   }
+  owner(doc: UiDocument, uuid: string): Id | null {
+    return (
+      Object.entries(doc.bindings).find(
+        ([, b]) => b.containerId === uuid || b.surfaceId === uuid,
+      )?.[0] ?? null
+    );
+  }
+  private previewPositions = new Map<HostObject, HostObject>();
+  previewMove(doc: UiDocument, ids: Id[], dx: number, dy: number) {
+    this.clearPreview();
+    for (const id of topSelection(doc, ids)) {
+      const mesh = this.element(doc.bindings[id]?.containerId ?? '')?.mesh;
+      if (!mesh) continue;
+      this.previewPositions.set(mesh, mesh.position.clone());
+      mesh.position.x += dx;
+      mesh.position.z += dy;
+      mesh.updateMatrixWorld(true);
+    }
+  }
+  clearPreview() {
+    for (const [mesh, position] of this.previewPositions) {
+      mesh.position.copy(position);
+      mesh.updateMatrixWorld(true);
+    }
+    this.previewPositions.clear();
+  }
   scene(doc: UiDocument): NativeSceneSnapshot {
     const scene: NativeSceneSnapshot = { nodes: {}, roots: [], selection: [] };
-    const ids = new Map(Object.entries(doc.bindings).map(([id, b]) => [b.elementId, id]));
+    const ids = new Map(Object.entries(doc.bindings).map(([id, b]) => [b.containerId, id]));
+    const ownedSurfaces = new Set(
+      Object.values(doc.bindings)
+        .filter((b) => b.surfaceId !== b.containerId)
+        .map((b) => b.surfaceId)
+        .filter(Boolean),
+    );
+    const selected: Id[] = [];
     const accepted = (e: HostObject) => e instanceof this.bb.Cube || e instanceof this.bb.Group;
-    const walk = (items: HostObject[], parentId?: string): string[] => {
+    const groupRect = (e: HostObject, parentRect?: { x: number; y: number }) => {
+      const cubes: HostObject[] = [];
+      e.forEachChild((c: HostObject) => {
+        if (c instanceof this.bb.Cube) cubes.push(c);
+      });
+      if (!cubes.length)
+        return { x: (parentRect?.x ?? 0) + 8, y: (parentRect?.y ?? 0) + 8, width: 160, height: 90 };
+      const x = Math.min(...cubes.map((c) => c.from[0])),
+        y = Math.min(...cubes.map((c) => c.from[2]));
+      return {
+        x,
+        y,
+        width: Math.max(1, Math.max(...cubes.map((c) => c.to[0])) - x),
+        height: Math.max(1, Math.max(...cubes.map((c) => c.to[2])) - y),
+      };
+    };
+    const walk = (items: HostObject[], parentId?: string, parentSurface?: string): string[] => {
       const order: string[] = [];
       for (const e of items.filter(accepted)) {
-        const id = ids.get(e.uuid) ?? e.uuid,
-          n = doc.nodes[id] ?? doc.nodes[e[SOURCE_MARKER]],
-          binding = doc.bindings[id] ?? doc.bindings[e[SOURCE_MARKER]];
+        if (ownedSurfaces.has(e.uuid) || e.uuid === parentSurface) continue;
+        const id = ids.get(e.uuid) ?? e.uuid;
+        const original = doc.nodes[e[SOURCE_MARKER]];
+        const n = doc.nodes[id] ?? original;
+        const binding = doc.bindings[id];
         const isCube = e instanceof this.bb.Cube;
-        const t = isCube ? e.faces.up.getTexture() : undefined;
-        const oldOrigin = binding?.groupOrigin ?? e.origin ?? [0, 0, 0];
-        const rect = isCube
-          ? { x: e.from[0], y: e.from[2], width: e.to[0] - e.from[0], height: e.to[2] - e.from[2] }
-          : {
-              x: (n?.rect.x ?? 0) + (e.origin[0] - oldOrigin[0]),
-              y: (n?.rect.y ?? 0) + (e.origin[2] - oldOrigin[2]),
-              width: n?.rect.width ?? 1,
-              height: n?.rect.height ?? 1,
-            };
+        const surface = isCube
+          ? e
+          : binding?.surfaceId
+            ? this.element(binding.surfaceId)
+            : original?.kind === 'image'
+              ? e.children.find(
+                  (c: HostObject) =>
+                    c instanceof this.bb.Cube &&
+                    c[ROLE_MARKER] === 'content' &&
+                    c[SOURCE_MARKER] === original.id,
+                )
+              : undefined;
+        const image = isCube || n?.kind === 'image';
+        const t = surface?.faces.up.getTexture();
+        const baseline = binding ?? doc.bindings[original?.id ?? ''];
+        const oldOrigin = baseline?.groupOrigin ?? e.origin ?? [0, 0, 0];
+        const rect = surface
+          ? {
+              x: surface.from[0],
+              y: surface.from[2],
+              width: surface.to[0] - surface.from[0],
+              height: surface.to[2] - surface.from[2],
+            }
+          : n
+            ? {
+                ...n.rect,
+                x: n.rect.x + (e.origin[0] - oldOrigin[0]),
+                y: n.rect.y + (e.origin[2] - oldOrigin[2]),
+              }
+            : groupRect(e, parentId ? scene.nodes[parentId]?.rect : undefined);
         let ancestor = e,
           unsupported: string | undefined;
         while (ancestor && ancestor !== 'root') {
@@ -152,10 +223,27 @@ export class NativeHost implements HostPort {
             unsupported = '检测到三维旋转，二维规则已暂停';
           ancestor = ancestor.parent;
         }
-        if (isCube && doc.bindings[id] && Math.abs(e.to[1] - e.from[1] - 0.1) > 1e-5)
-          unsupported = 'Cube 厚度已改变，二维规则已暂停';
-        if (isCube && (rect.width <= 0 || rect.height <= 0))
-          unsupported = 'Cube 尺寸不适合二维布局';
+        if (image && !isCube && (!surface || surface.parent !== e))
+          unsupported = 'Image 内容载体缺失或已移出，请采用当前结果或重新生成';
+        if (
+          surface &&
+          binding &&
+          (Math.abs(surface.to[1] - surface.from[1] - 0.1) > 1e-5 ||
+            surface.rotation?.some((v: number) => Math.abs(v) > 1e-6))
+        )
+          unsupported = '内容载体的三维几何已改变，二维规则已暂停';
+        if (image && (rect.width <= 0 || rect.height <= 0)) unsupported = '内容尺寸不适合二维布局';
+        if (
+          surface &&
+          binding &&
+          !isCube &&
+          (JSON.stringify(surface.faces.up.uv) !==
+            JSON.stringify([0, 0, t?.uv_width, t?.uv_height]) ||
+            (binding.textureId && binding.textureId !== t?.uuid) ||
+            surface.visibility !== e.visibility ||
+            surface.locked !== e.locked)
+        )
+          unsupported = '内容载体的 UV、贴图或显示状态已独立修改，规则已暂停';
         const pixelFingerprint = this.pixelFingerprint(t);
         const fingerprint = hashString(
           JSON.stringify([
@@ -163,21 +251,24 @@ export class NativeHost implements HostPort {
             e.name,
             e.visibility !== false,
             e.locked === true,
-            isCube ? e.to[1] : 0,
+            surface?.to[1] ?? 0,
             t?.uuid,
             pixelFingerprint,
-            isCube ? e.faces.up.uv : null,
+            surface?.faces.up.uv,
             e.rotation,
             e.parent?.uuid ?? null,
+            surface?.parent?.uuid ?? null,
+            surface?.visibility,
           ]),
         );
         scene.nodes[id] = {
           id,
-          elementId: e.uuid,
-          kind: isCube ? 'layer' : 'group',
+          containerId: e.uuid,
+          surfaceId: surface?.uuid,
+          kind: image ? 'image' : 'frame',
           sourceId: e[SOURCE_MARKER] || undefined,
           rect,
-          depth: isCube ? e.to[1] : 0,
+          depth: surface?.to[1] ?? 0,
           name: e.name,
           visible: e.visibility !== false,
           locked: e.locked === true,
@@ -190,13 +281,23 @@ export class NativeHost implements HostPort {
           children: [],
         };
         order.push(id);
-        if (isCube ? e.selected : this.project.selected_groups?.includes(e))
-          scene.selection.push(id);
-        if (!isCube) scene.nodes[id]!.children = walk(e.children, id);
+        if (isCube ? e.selected : this.project.selected_groups?.includes(e)) selected.push(id);
+        if (surface?.selected) selected.push(id);
+        if (!isCube) scene.nodes[id]!.children = walk(e.children, id, surface?.uuid);
       }
       return order;
     };
     scene.roots = walk(this.project.outliner);
+    // Group selection marks descendants selected; keep only explicit ancestors logically.
+    const selectedSet = new Set(selected);
+    scene.selection = [...selectedSet].filter((id) => {
+      let parent = scene.nodes[id]?.parentId;
+      while (parent) {
+        if (selectedSet.has(parent)) return false;
+        parent = scene.nodes[parent]?.parentId;
+      }
+      return true;
+    });
     return scene;
   }
   snapshots(doc: UiDocument): Record<Id, NativeSnapshot> {
@@ -320,7 +421,7 @@ export class NativeHost implements HostPort {
     if (previous)
       for (const [id, binding] of Object.entries(previous.bindings)) {
         if (doc.nodes[id]) continue;
-        const e = this.element(binding.elementId);
+        const e = this.element(binding.containerId);
         if (e) e.remove();
         if (
           binding.textureId &&
@@ -330,49 +431,71 @@ export class NativeHost implements HostPort {
           if (t) t.remove(true);
         }
       }
+    this.clearPreview();
     for (const id of scene.order) {
       const n = doc.nodes[id]!,
         resolved = scene.nodes[id]!;
-      let binding = doc.bindings[id],
-        element = binding ? this.element(binding.elementId) : undefined;
-      const created = !element;
-      const parent = n.parent ? this.element(doc.bindings[n.parent]?.elementId ?? '') : 'root';
-      if (!element) {
-        element =
-          n.kind === 'layer'
-            ? new this.bb.Cube({ name: n.name, box_uv: false, autouv: 0, shade: false }, id)
-            : new this.bb.Group({ name: n.name, origin: [0, 0, 0] }, id);
-        element.addTo(parent ?? 'root').init();
-        binding = doc.bindings[id] = { elementId: element.uuid };
+      let binding = doc.bindings[id];
+      if (n.suspended && binding) continue;
+      let container = binding ? this.element(binding.containerId) : undefined;
+      const raw = container instanceof this.bb.Cube ? container : undefined;
+      const parent = n.parent ? this.element(doc.bindings[n.parent]?.containerId ?? '') : 'root';
+      const created = !(container instanceof this.bb.Group);
+      if (created) {
+        container = new this.bb.Group({ name: n.name, origin: [0, 0, 0] });
+        if (raw) container.sortInBefore(raw).init();
+        else container.addTo(parent ?? 'root').init();
+        binding = doc.bindings[id] = {
+          ...binding,
+          containerId: container.uuid,
+          surfaceId: binding?.surfaceId ?? raw?.uuid,
+        };
       }
       if (!binding) continue;
-      if (n.suspended) continue;
       const old = previous?.nodes[id];
       const siblings = n.parent ? doc.nodes[n.parent]!.children : doc.roots;
-      const oldSiblings = n.parent ? previous?.nodes[n.parent]?.children : previous?.roots;
+      const oldSiblings = old?.parent ? previous?.nodes[old.parent]?.children : previous?.roots;
       const reordered = JSON.stringify(siblings) !== JSON.stringify(oldSiblings);
+      container.name = n.name;
+      container.visibility = n.visible;
+      container.locked = n.locked;
+      if (created || old?.parent !== n.parent || reordered) container.addTo(parent ?? 'root');
+      container[SOURCE_MARKER] = id;
+      container[ROLE_MARKER] = 'container';
+      binding.groupOrigin = [...container.origin] as [number, number, number];
+      changedGroups.push(container);
+      if (n.kind === 'frame') continue;
+      let element = binding.surfaceId ? this.element(binding.surfaceId) : undefined;
+      const newSurface = !element;
+      if (!element)
+        element = new this.bb.Cube({
+          name: n.name + ' · 内容',
+          box_uv: false,
+          autouv: 0,
+          shade: false,
+        })
+          .addTo(container, 0)
+          .init();
+      binding.surfaceId = element.uuid;
+      if (element.parent !== container || container.children.indexOf(element) !== 0)
+        element.addTo(container, 0);
+      element.name = n.name + ' · 内容';
+      element.visibility = n.visible;
+      element.locked = n.locked;
+      element[SOURCE_MARKER] = id;
+      element[ROLE_MARKER] = 'content';
+      if (raw?.selected) container.multiSelect();
       const changed =
         created ||
+        newSurface ||
         !!bitmaps[id] ||
         !old ||
         JSON.stringify(old.rect) !== JSON.stringify(n.rect) ||
-        old.name !== n.name ||
         old.visible !== n.visible ||
         old.locked !== n.locked ||
-        old.parent !== n.parent ||
-        reordered ||
-        (n.kind === 'layer' && Math.abs(element.to[1] - resolved.depth) > 1e-6);
+        old.name !== n.name ||
+        Math.abs(element.to[1] - resolved.depth) > 1e-6;
       if (!changed) continue;
-      element.name = n.name;
-      element.visibility = n.visible;
-      element.locked = n.locked;
-      if (created || old?.parent !== n.parent || reordered) element.addTo(parent ?? 'root');
-      element[SOURCE_MARKER] = id;
-      if (n.kind !== 'layer') {
-        binding.groupOrigin = [...element.origin] as [number, number, number];
-        changedGroups.push(element);
-        continue;
-      }
       changedElements.push(element);
       const r = resolved.rect,
         depth = resolved.depth;
@@ -390,6 +513,7 @@ export class NativeHost implements HostPort {
         texture.add(false);
         binding.textureId = texture.uuid;
       }
+      texture.name = `${n.name}.png`;
       const pixels = bitmaps[id];
       if (pixels) {
         // Rebuild editable native layers from retained originals. Do not leave layer.scale != 1:
@@ -434,18 +558,24 @@ export class NativeHost implements HostPort {
   private textureSelectionKey = '';
   syncSelectedTexture(doc: UiDocument, ids: Id[]) {
     if (!this.active() || this.syncingTexture) return;
-    const id = ids.find((id) => doc.nodes[id]?.kind === 'layer');
+    const id = ids.find((id) => doc.nodes[id]?.kind === 'image');
     const binding = id ? doc.bindings[id] : undefined;
-    const key = binding ? `${binding.elementId}:${binding.textureId}` : '';
+    const key = binding ? `${binding.containerId}:${binding.textureId}` : '';
     if (key === this.textureSelectionKey) return;
     this.textureSelectionKey = key;
     if (!binding?.textureId) return;
     const texture = this.texture(binding.textureId),
-      element = this.element(binding.elementId);
+      element = this.element(binding.surfaceId ?? '');
     if (!texture || !element) return;
     this.syncingTexture = true;
     try {
       const uv = this.bb.UVEditor;
+      const selected = this.project.selected_elements;
+      const index = selected.indexOf(element);
+      if (index > 0) {
+        selected.splice(index, 1);
+        selected.unshift(element);
+      }
       const faces = uv.getSelectedFaces(element, true);
       faces.splice(0, faces.length, 'up');
       texture.select();
@@ -465,7 +595,7 @@ export class NativeHost implements HostPort {
     this.bb.Undo.initSelection();
     this.bb.unselectAllElements();
     for (const id of ids) {
-      const e = this.element(doc.bindings[id]?.elementId ?? '');
+      const e = this.element(doc.bindings[id]?.containerId ?? '');
       if (e instanceof this.bb.Group) e.multiSelect?.();
       else e?.markAsSelected();
       e?.showInOutliner?.();
@@ -474,6 +604,16 @@ export class NativeHost implements HostPort {
     this.bb.Undo.finishSelection('Select UI elements');
     this.syncSelectedTexture(doc, ids);
   }
+  private paintOwner: Id | null = null;
+  restorePaintSelection(doc: UiDocument) {
+    if (!this.paintOwner || !this.bb.Modes.edit) return;
+    const id = this.paintOwner;
+    this.paintOwner = null;
+    if (doc.nodes[id]) {
+      this.bb.unselectAllElements();
+      this.select(doc, [id]);
+    }
+  }
   beginPaint(doc: UiDocument, id: Id, onSource: (png: string) => Promise<void>) {
     const node = doc.nodes[id],
       binding = doc.bindings[id];
@@ -481,7 +621,10 @@ export class NativeHost implements HostPort {
     const texture = this.texture(binding.textureId);
     if (!texture) return;
     if (node.content.kind === 'paint') {
-      this.select(doc, [id]);
+      this.paintOwner = id;
+      this.bb.unselectAllElements();
+      this.element(binding.surfaceId ?? '')?.markAsSelected();
+      this.bb.updateSelection();
       texture.select();
       this.bb.Modes.options.paint.select();
       this.bb.BarItems.brush_tool.select();

@@ -1,6 +1,13 @@
 import type { Handle, Rect } from '../domain/types';
 import type { Measurement } from '../domain/geometry';
 export interface OverlayModel {
+  hover?: Rect | null;
+  labels?: { id: string; name: string; rect: Rect }[];
+  drop?: {
+    rect: Rect;
+    name: string;
+    line?: { from: { x: number; y: number }; to: { x: number; y: number } };
+  } | null;
   width: number;
   height: number;
   selection: Rect | null;
@@ -56,6 +63,78 @@ export function drawOverlay(root: HTMLElement, model: OverlayModel) {
       paths.push(`M0 ${y}H${model.width}`);
   }
   set(grid, { d: paths.join(' '), opacity: g?.opacity ?? 0 });
+  let aids = svg.querySelector('[data-mcui-aids]');
+  if (!aids) {
+    aids = element('g', { 'data-mcui-aids': '' });
+    svg.append(aids);
+  }
+  aids.replaceChildren();
+  const outline = (r: Rect, color: string, width: number, attr: string) =>
+    aids!.append(
+      element('rect', {
+        [attr]: '',
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+        fill: 'none',
+        stroke: color,
+        'stroke-width': width,
+      }),
+    );
+  if (model.hover) outline(model.hover, '#afcfff', 1, 'data-mcui-hover');
+  let labelLayer = svg.querySelector('[data-mcui-labels]');
+  if (!labelLayer) {
+    labelLayer = element('g', { 'data-mcui-labels': '' });
+    svg.append(labelLayer);
+  }
+  const labelIds = new Set((model.labels ?? []).map((label) => label.id));
+  for (const e of labelLayer.querySelectorAll('[data-mcui-label]'))
+    if (!labelIds.has(e.getAttribute('data-mcui-label')!)) e.remove();
+  for (const label of model.labels ?? []) {
+    let text = labelLayer.querySelector(`[data-mcui-label="${label.id}"]`);
+    if (!text) {
+      text = element('text', {
+        'data-mcui-label': label.id,
+        fill: '#bed7fa',
+        'font-size': 12,
+        'font-family': 'sans-serif',
+        style: 'pointer-events:all;cursor:pointer',
+      });
+      labelLayer.append(text);
+    }
+    set(text, { x: label.rect.x + 4, y: label.rect.y + 14 });
+    if (text.textContent !== label.name) text.textContent = label.name;
+  }
+  if (model.drop) {
+    outline(model.drop.rect, '#7aafff', 2, 'data-mcui-drop');
+    const t = element('text', {
+      x: model.drop.rect.x + 6,
+      y: model.drop.rect.y + 17,
+      fill: '#c5dcff',
+      stroke: '#172332',
+      'stroke-width': 3,
+      'paint-order': 'stroke',
+      'font-size': 12,
+      'data-mcui-drop-name': '',
+    });
+    t.textContent = '放入：' + model.drop.name;
+    aids.append(t);
+    if (model.drop.line) {
+      const { from, to } = model.drop.line;
+      aids.append(
+        element('line', {
+          'data-mcui-insertion': '',
+          x1: from.x,
+          y1: from.y,
+          x2: to.x,
+          y2: to.y,
+          stroke: '#84b5ff',
+          'stroke-width': 3,
+        }),
+      );
+    }
+  }
   const r = model.selection;
   if (r) {
     let border = svg.querySelector('[data-mcui-selection]');
