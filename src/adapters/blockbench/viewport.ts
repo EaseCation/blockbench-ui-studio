@@ -1,5 +1,17 @@
 import { UiGrid } from './ui-grid';
-import { pickNode, pickDrop, type PickNode, type DropTarget } from '../../application/targets';
+import {
+  pickNode,
+  pickDrop,
+  pickDrawingParent,
+  type PickNode,
+  type DropTarget,
+} from '../../application/targets';
+import {
+  DrawingMachine,
+  previewDrawing,
+  type DrawKind,
+  type DrawingPoint,
+} from '../../application/drawing';
 import type { Studio } from '../../application/studio';
 import { InteractionMachine } from '../../application/interaction';
 import { bounds, distances } from '../../domain/geometry';
@@ -38,6 +50,12 @@ export class ViewportController {
   private alt = false;
   private pointerId: number | null = null;
   private machine: InteractionMachine;
+  private drawing = new DrawingMachine();
+  private drawingTools: Partial<Record<DrawKind, HostObject>> = {};
+  private drawingPreview: HostObject | null = null;
+  private drawingTarget: DropTarget | null = null;
+  private drawingPlacement: Rect | null = null;
+  private drawingError: string | null = null;
   private currentView: '2d' | '3d';
   private projectId: string;
   private originalCamera: CameraState;
@@ -67,33 +85,77 @@ export class ViewportController {
         if (data?.event) this.alt = data.event.altKey;
         this.draw();
       },
-      onUnselect: () => {
-        this.machine?.cancel();
-        this.pointerId = null;
-        this.hover = null;
-        this.dropTarget = null;
-      },
+      onUnselect: () => this.cancelInput(),
       modes: ['edit'],
       condition: () => !!bb.Project?.unhandled_root_fields?.mcui_studio,
     });
     this.disposables.add(this.tool);
+    bb.Toolbars.tools.add(this.tool);
+    for (const [kind, key, icon] of [
+      ['frame', 'a', 'crop_free'],
+      ['image', 'r', 'image'],
+    ] as const) {
+      const tool = new bb.Tool('mcui_draw_' + kind, {
+        name: kind === 'frame' ? '绘制 Frame' : '绘制 Image',
+        category: 'tools',
+        icon,
+        cursor: 'crosshair',
+        description: '拖拽创建 · Shift 正方形 · Option/Alt 中心绘制 · Space 移动绘制框',
+        transformerMode: 'hidden',
+        toolbar: 'main_tools',
+        selectElements: false,
+        // An empty modes list prevents the host's unmatched-key fallback from switching modes.
+        modes: [],
+        condition: () => this.drawingContext() && !bb.Dialog.open && !bb.open_menu,
+        keybind: new bb.Keybind({ key }),
+        onUnselect: () => this.cancelInput(),
+        onSelect: () => {
+          this.hover = null;
+          this.dropTarget = null;
+          this.draw();
+        },
+      });
+      this.drawingTools[kind] = tool;
+      bb.Toolbars.tools.add(tool);
+      this.disposables.add(tool);
+    }
+    this.disposables.add(
+      bb.Blockbench.on('press_key', (data: HostObject) => {
+        const e = data.event as KeyboardEvent;
+        if (
+          !this.drawingContext() ||
+          data.input_in_focus ||
+          typing(e.target) ||
+          typing(document.activeElement) ||
+          e.isComposing ||
+          bb.Dialog.open ||
+          bb.open_menu
+        )
+          return;
+        for (const tool of Object.values(this.drawingTools))
+          if (tool.keybind.isTriggered(e)) {
+            data.capture();
+            if (!e.repeat) tool.select();
+            return;
+          }
+      }),
+    );
     this.machine = new InteractionMachine(studio, { pan: (dx, dy) => this.pan(dx, dy) });
-    this.disposables.add(studio.subscribe(() => this.draw()));
+    this.disposables.add(
+      studio.subscribe(() => {
+        if (this.drawing.request) this.updateDrawing();
+        this.draw();
+      }),
+    );
     this.disposables.add(
       bb.Blockbench.on('unselect_project', () => {
-        this.machine.cancel();
-        this.pointerId = null;
-        this.hover = null;
-        this.dropTarget = null;
+        this.cancelInput();
       }),
     );
     this.disposables.add(
       bb.Blockbench.on('select_mode', () => {
         if (!bb.Modes.edit) {
-          this.machine.cancel();
-          this.pointerId = null;
-          this.hover = null;
-          this.dropTarget = null;
+          this.cancelInput();
         }
       }),
     );
@@ -129,10 +191,7 @@ export class ViewportController {
     this.disposables.listen(window, 'blur', () => {
       this.space = false;
       this.alt = false;
-      this.machine.cancel();
-      this.pointerId = null;
-      this.hover = null;
-      this.dropTarget = null;
+      this.cancelInput();
       this.draw();
     });
     this.attach();
@@ -160,9 +219,7 @@ export class ViewportController {
     p.controls.update();
   }
   setView(view: '2d' | '3d') {
-    this.machine.cancel();
-    this.hover = null;
-    this.dropTarget = null;
+    this.cancelInput();
     this.memory.views[this.currentView] = this.capture();
     const p = this.bb.Preview.selected,
       saved = this.memory.views[view];
@@ -202,15 +259,12 @@ export class ViewportController {
     p.controls.update();
   }
   setAutomaticPlacement(value: boolean) {
-    this.machine.cancel();
-    this.dropTarget = null;
+    this.cancelInput();
     this.automaticPlacement = value;
     this.draw();
   }
   setInteraction(value: 'figma' | 'native') {
-    this.machine.cancel();
-    this.hover = null;
-    this.dropTarget = null;
+    this.cancelInput();
     this.studio.setInteraction(value);
     this.syncTool();
     this.draw();
@@ -222,7 +276,8 @@ export class ViewportController {
       this.bb.Modes.edit
     )
       this.tool.select();
-    else if (this.bb.Toolbox.selected === this.tool) this.bb.BarItems.move_tool.select();
+    else if (this.bb.Toolbox.selected === this.tool || this.drawingKind())
+      this.bb.BarItems.move_tool.select();
   }
   private navigationActive() {
     return (
@@ -230,6 +285,62 @@ export class ViewportController {
       this.studio.state.view === '2d' &&
       this.bb.Preview.selected?.isOrtho
     );
+  }
+  private drawingContext() {
+    return (
+      this.bb.Project?.uuid === this.projectId &&
+      this.navigationActive() &&
+      this.bb.Preview.selected?.angle === 'top' &&
+      this.bb.Modes.edit &&
+      !this.studio.state.busy &&
+      !this.bb.Dialog.open &&
+      !this.bb.open_menu
+    );
+  }
+  private drawingKind(): DrawKind | null {
+    return (
+      (Object.keys(this.drawingTools) as DrawKind[]).find(
+        (kind) => this.drawingTools[kind] === this.bb.Toolbox.selected,
+      ) ?? null
+    );
+  }
+  private drawingActive() {
+    return this.drawingContext() && !!this.drawingKind();
+  }
+  private cancelInput() {
+    this.machine?.cancel();
+    this.drawing.cancel();
+    this.drawingPreview = null;
+    this.drawingTarget = null;
+    this.drawingPlacement = null;
+    this.drawingError = null;
+    const pointer = this.pointerId;
+    this.pointerId = null;
+    this.hover = null;
+    this.dropTarget = null;
+    if (pointer !== null)
+      for (const p of this.previews.keys())
+        if (p.node.hasPointerCapture(pointer)) p.node.releasePointerCapture(pointer);
+  }
+  private drawingPoint(e: PointerEvent, p: HostObject): DrawingPoint {
+    return {
+      world: this.world(e.clientX, e.clientY, p),
+      screen: { x: e.clientX, y: e.clientY },
+      shift: e.shiftKey,
+      alt: e.altKey,
+      space: this.space,
+    };
+  }
+  private updateDrawing() {
+    const request = this.drawing.request;
+    if (!request) return;
+    try {
+      this.drawingPlacement = previewDrawing(this.studio.state.doc, request);
+      this.drawingError = null;
+    } catch (error) {
+      this.drawingPlacement = null;
+      this.drawingError = error instanceof Error ? error.message : String(error);
+    }
   }
   private active() {
     return (
@@ -418,7 +529,34 @@ export class ViewportController {
         p.node,
         'pointerdown',
         ((e: PointerEvent) => {
+          if (e.isPrimary === false || this.pointerId !== null) return;
           this.bb.Preview.selected = p;
+          const surface = e.target === p.canvas || root.contains(e.target as Node);
+          if (
+            this.drawingActive() &&
+            e.button === 0 &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            !this.space &&
+            surface
+          ) {
+            stop(e);
+            (document.activeElement as HTMLElement)?.blur?.();
+            p.controls.stopMovement?.();
+            this.pointerId = e.pointerId;
+            p.node.setPointerCapture(e.pointerId);
+            this.drawingPreview = p;
+            this.drawingTarget = pickDrawingParent(
+              this.studio.state.doc,
+              this.pickNodes(p),
+              this.local(e, p),
+              this.automaticPlacement,
+            );
+            this.drawing.begin(this.drawingKind()!, this.drawingPoint(e, p), this.drawingTarget);
+            this.updateDrawing();
+            this.draw();
+            return;
+          }
           if (
             !this.navigationActive() ||
             (!this.active() && e.button !== 1 && !this.space) ||
@@ -454,8 +592,29 @@ export class ViewportController {
         p.node,
         'pointermove',
         ((e: PointerEvent) => {
-          if (!this.navigationActive()) return;
+          if (
+            !this.navigationActive() ||
+            (this.pointerId !== null && this.pointerId !== e.pointerId)
+          )
+            return;
+          if (this.drawing.request) {
+            stop(e);
+            this.drawing.update(this.drawingPoint(e, this.drawingPreview ?? p));
+            this.updateDrawing();
+            this.draw();
+            return;
+          }
           if (this.pointerId === null) {
+            if (this.drawingActive()) {
+              this.drawingTarget = pickDrawingParent(
+                this.studio.state.doc,
+                this.pickNodes(p),
+                this.local(e, p),
+                this.automaticPlacement,
+              );
+              this.draw();
+              return;
+            }
             if (this.active()) {
               this.hover = this.hit(e, p);
               this.alt = e.altKey;
@@ -480,6 +639,31 @@ export class ViewportController {
         ((e: PointerEvent) => {
           if (this.pointerId !== e.pointerId) return;
           stop(e);
+          if (this.drawing.request) {
+            if (!this.drawingActive()) {
+              this.cancelInput();
+              this.draw();
+              return;
+            }
+            const view = this.drawingPreview ?? p,
+              rect = view.canvas.getBoundingClientRect();
+            const inside =
+              e.clientX >= rect.left &&
+              e.clientX <= rect.right &&
+              e.clientY >= rect.top &&
+              e.clientY <= rect.bottom;
+            this.drawing.update(this.drawingPoint(e, view));
+            this.updateDrawing();
+            const request = this.drawing.finish(),
+              error = this.drawingError;
+            this.cancelInput();
+            if (inside && request) {
+              if (error) this.bb.Blockbench.showQuickMessage(error, 4500);
+              else if (this.studio.createDrawn(request)) this.tool.select();
+            }
+            this.draw();
+            return;
+          }
           this.machine.move(this.input(e, p));
           this.machine.up();
           this.dropTarget = null;
@@ -492,25 +676,36 @@ export class ViewportController {
       cleanup.listen(p.node, 'pointerleave', () => {
         this.hover = null;
         this.dropTarget = null;
+        if (!this.drawing.request) this.drawingTarget = null;
         this.draw();
       });
       cleanup.listen(
         p.node,
         'pointercancel',
         () => {
-          this.machine.cancel();
-          this.pointerId = null;
+          this.cancelInput();
           this.draw();
         },
         { capture: true },
       );
       cleanup.listen(p.node, 'lostpointercapture', () => {
         if (this.pointerId !== null) {
-          this.machine.cancel();
-          this.pointerId = null;
+          this.cancelInput();
           this.draw();
         }
       });
+      cleanup.listen(
+        p.node,
+        'contextmenu',
+        ((e: MouseEvent) => {
+          if (!this.drawingActive()) return;
+          stop(e);
+          this.cancelInput();
+          this.tool.select();
+          this.draw();
+        }) as EventListener,
+        true,
+      );
       cleanup.listen(
         p.node,
         'dblclick',
@@ -533,6 +728,7 @@ export class ViewportController {
           if (!this.navigationActive()) return;
           this.bb.Preview.selected = p;
           stop(e);
+          if (this.drawing.request) return;
           const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? p.height : 1;
           if (e.ctrlKey) {
             const before = this.world(e.clientX, e.clientY, p);
@@ -555,10 +751,16 @@ export class ViewportController {
     }
   }
   private key(e: KeyboardEvent, down: boolean) {
+    // Release temporary modifiers even if a dialog/input gained focus after keydown.
+    if (!down && e.code === 'Space') this.space = false;
+    if (!down && e.key === 'Alt') this.alt = false;
     if (
       typing(e.target) ||
+      this.bb.Dialog.open ||
+      this.bb.open_menu ||
       !this.navigationActive() ||
-      !['preview', 'outliner', 'element', 'transform'].includes(this.bb.Prop.active_panel)
+      (!this.drawingActive() &&
+        !['preview', 'outliner', 'element', 'transform'].includes(this.bb.Prop.active_panel))
     )
       return;
     if (e.code === 'Space') {
@@ -566,22 +768,47 @@ export class ViewportController {
       e.preventDefault();
       e.stopImmediatePropagation();
     }
+    if (this.drawingActive() && ['Shift', 'Alt', ' '].includes(e.key)) {
+      this.drawing.modifiers(e.shiftKey, e.altKey, this.space);
+      this.updateDrawing();
+      this.draw();
+    }
     if (e.key === 'Alt' && this.active()) {
       this.alt = down;
       e.stopImmediatePropagation();
       this.draw();
     }
     if (!down) return;
+    if (
+      this.drawingActive() &&
+      (e.key === 'Escape' || (e.key.toLowerCase() === 'v' && !e.ctrlKey && !e.metaKey && !e.altKey))
+    ) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const drawing = !!this.drawing.request;
+      this.cancelInput();
+      if (!drawing || e.key.toLowerCase() === 'v') this.tool.select();
+      this.draw();
+      return;
+    }
+    if (
+      this.drawing.request &&
+      (['Delete', 'Backspace'].includes(e.key) ||
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'))
+    ) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.cancelInput();
+      this.draw();
+      return;
+    }
     if (e.key === 'Escape') {
       const p = this.bb.Preview.selected;
       if (p.selection.sr_move_f) {
         this.bb.Undo.cancelSelection(true);
         p.stopSelRect(e);
       }
-      this.machine.cancel();
-      this.pointerId = null;
-      this.hover = null;
-      this.dropTarget = null;
+      this.cancelInput();
       this.draw();
     }
     if (!this.active() || e.metaKey || e.ctrlKey) return;
@@ -598,6 +825,7 @@ export class ViewportController {
   }
   draw() {
     if (this.bb.Project?.uuid !== this.projectId) return;
+    if (this.drawing.request && !this.drawingContext()) this.cancelInput();
     this.memory.views[this.currentView] = this.capture();
     this.grid.update(this.studio.state.view === '2d');
     for (const [p, entry] of this.previews) {
@@ -618,8 +846,14 @@ export class ViewportController {
               y: originalSelection.y + delta.y,
             }
           : originalSelection;
+      const drawing = this.drawingActive();
       const nodes = this.pickNodes(p),
-        drop = this.machine.phase === 'move' ? this.dropTarget : null;
+        drop =
+          drawing && this.machine.phase !== 'pan'
+            ? this.drawingTarget
+            : this.machine.phase === 'move'
+              ? this.dropTarget
+              : null;
       const hovered =
         this.active() &&
         this.machine.phase === 'idle' &&
@@ -634,19 +868,32 @@ export class ViewportController {
       const origin = this.screen({ x: 0, y: 0 }, p),
         unit = this.screen({ x: 1, y: 1 }, p);
       const spacing = Math.abs(unit.x - origin.x);
+      const request = drawing && this.drawingPreview === p ? this.drawing.request : null;
       const model = {
+        creation: request
+          ? {
+              rect: this.screenRect(request.rect, p),
+              placement: this.drawingPlacement ? this.screenRect(this.drawingPlacement, p) : null,
+              label: `${request.kind === 'frame' ? 'Frame' : 'Image'} · ${request.rect.width} × ${request.rect.height}px`,
+              error: this.drawingError,
+            }
+          : null,
         hover: hovered?.rect ?? null,
-        labels: this.active()
-          ? nodes
-              .filter((n) => !!n.label && this.studio.state.scene.nodes[n.id]?.visible)
-              .map((n) => ({
-                id: n.id,
-                name: this.labelText(this.studio.state.doc.nodes[n.id]!.name, n.label!.width),
-                rect: n.label!,
-              }))
-          : [],
+        labels:
+          this.active() || drawing
+            ? nodes
+                .filter((n) => !!n.label && this.studio.state.scene.nodes[n.id]?.visible)
+                .map((n) => ({
+                  id: n.id,
+                  name: this.labelText(this.studio.state.doc.nodes[n.id]!.name, n.label!.width),
+                  rect: n.label!,
+                }))
+            : [],
         drop:
-          drop && this.active()
+          drop &&
+          nodes.some((n) => n.id === drop.parentId) &&
+          this.studio.state.doc.nodes[drop.parentId] &&
+          (this.active() || drawing)
             ? {
                 rect: nodes.find((n) => n.id === drop.parentId)!.rect,
                 name: this.studio.state.doc.nodes[drop.parentId]!.name,
@@ -675,17 +922,22 @@ export class ViewportController {
     }
   }
   dispose() {
-    this.machine.cancel();
+    this.cancelInput();
     for (const { root, cleanup } of this.previews.values()) {
       cleanup.dispose();
       clearOverlay(root);
       root.remove();
     }
     this.previews.clear();
-    if (this.bb.Project?.uuid === this.projectId) {
-      if (this.bb.Toolbox.selected === this.tool) this.originalTool?.select();
-      this.restore(this.originalCamera);
+    if (this.bb.Toolbox.selected === this.tool || this.drawingKind()) {
+      const original = this.originalTool;
+      const registered = original && this.bb.BarItems[original.id] === original;
+      const fallback = this.bb.Modes.paint
+        ? this.bb.BarItems.brush_tool
+        : this.bb.BarItems.move_tool;
+      (registered && this.bb.BARS.condition(original.condition) ? original : fallback)?.select();
     }
+    if (this.bb.Project?.uuid === this.projectId) this.restore(this.originalCamera);
     this.disposables.dispose();
     this.grid.restore();
   }

@@ -7,6 +7,7 @@ import {
   validateDocument,
 } from '../domain/document';
 import { reparentNodes, retainWorldRect } from '../domain/tree-editing';
+import { insertDrawing, type DrawRequest } from './drawing';
 import type { DropIntent } from './targets';
 import { layout } from '../domain/layout';
 import { blank, decorate, hasAppearance, mergePaint, renderPixels } from '../domain/raster';
@@ -330,6 +331,22 @@ export class Studio {
       }
       doc.nodes[id] = n;
     });
+    this.select([id]);
+    return id;
+  }
+  createDrawn(request: DrawRequest): Id | null {
+    const id = this.images.id();
+    const success = this.execute(request.kind === 'frame' ? '绘制 Frame' : '绘制 Image', (doc) => {
+      const node = insertDrawing(doc, id, request);
+      if (node.kind === 'image')
+        node.content = {
+          kind: 'paint',
+          source: this.putSource(doc, blank(request.rect.width, request.rect.height)),
+          mode: 'extend',
+          origin: { x: 0, y: 0 },
+        };
+    });
+    if (!success) return null;
     this.select([id]);
     return id;
   }

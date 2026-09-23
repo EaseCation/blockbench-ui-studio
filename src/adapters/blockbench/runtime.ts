@@ -49,6 +49,7 @@ export interface HostRuntime {
   Toolbars: HostObject;
   BarSelect: HostObject;
   Dialog: HostObject;
+  open_menu?: HostObject;
   BARS: HostObject;
 }
 export const hostRuntime = (): HostRuntime => window as unknown as HostRuntime;

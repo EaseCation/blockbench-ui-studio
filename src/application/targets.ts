@@ -96,7 +96,9 @@ export function pickDrop(
   if (!target) return null;
   const n = doc.nodes[target.id]!;
   if (n.frame?.engineType !== 'stack_panel')
-    return ids.every((id) => doc.nodes[id]?.parent === n.id) ? null : { parentId: n.id };
+    return ids.length > 0 && ids.every((id) => doc.nodes[id]?.parent === n.id)
+      ? null
+      : { parentId: n.id };
   const row = n.frame.direction === 'row',
     coordinate = row ? point.x : point.y;
   const children = n.children.filter(
@@ -129,4 +131,14 @@ export function pickDrop(
           to: { x: target.rect.x + target.rect.width, y: edge },
         },
   };
+}
+
+/** Creation has no moving selection to exclude. */
+export function pickDrawingParent(
+  doc: UiDocument,
+  nodes: PickNode[],
+  point: Point,
+  automatic: boolean,
+): DropTarget | null {
+  return automatic ? pickDrop(doc, nodes, [], point, true) : null;
 }

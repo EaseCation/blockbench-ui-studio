@@ -1,6 +1,7 @@
 import type { Handle, Rect } from '../domain/types';
 import type { Measurement } from '../domain/geometry';
 export interface OverlayModel {
+  creation?: { rect: Rect; placement: Rect | null; label: string; error: string | null } | null;
   hover?: Rect | null;
   labels?: { id: string; name: string; rect: Rect }[];
   drop?: {
@@ -134,6 +135,58 @@ export function drawOverlay(root: HTMLElement, model: OverlayModel) {
         }),
       );
     }
+  }
+  let creation = svg.querySelector('[data-mcui-creation]');
+  if (!creation) {
+    creation = element('g', { 'data-mcui-creation': '' });
+    svg.append(creation);
+  }
+  creation.replaceChildren();
+  if (model.creation) {
+    const c = model.creation,
+      r = c.rect,
+      color = c.error ? '#ff798b' : '#87bdff';
+    creation.append(
+      element('rect', {
+        'data-mcui-draft': '',
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+        fill: color,
+        'fill-opacity': 0.1,
+        stroke: color,
+        'stroke-width': 1,
+      }),
+    );
+    if (c.placement && JSON.stringify(c.placement) !== JSON.stringify(r)) {
+      const p = c.placement;
+      creation.append(
+        element('rect', {
+          'data-mcui-placement': '',
+          x: p.x,
+          y: p.y,
+          width: p.width,
+          height: p.height,
+          fill: 'none',
+          stroke: color,
+          'stroke-width': 1,
+          'stroke-dasharray': '4 3',
+        }),
+      );
+    }
+    const text = element('text', {
+      'data-mcui-draft-size': '',
+      x: Math.max(4, Math.min(model.width - 170, r.x + r.width + 8)),
+      y: Math.max(16, Math.min(model.height - 8, r.y + r.height + 17)),
+      fill: color,
+      stroke: '#172332',
+      'stroke-width': 3,
+      'paint-order': 'stroke',
+      'font-size': 12,
+    });
+    text.textContent = c.error ?? c.label;
+    creation.append(text);
   }
   const r = model.selection;
   if (r) {

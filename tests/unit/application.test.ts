@@ -309,3 +309,28 @@ it('取消纯显示预览后继续移动不会使贴图缓存失效', () => {
   expect(host.renders).toBe(renders);
   expect(app.state.doc.nodes[id]!.rect.x).toBe(18);
 });
+
+it('拖绘创建按目标尺寸分配透明贴图，所有对象只占一次事务', () => {
+  const { app, host } = fixture(),
+    parent = app.add('image'),
+    commits = host.commits;
+  const id = app.createDrawn({
+    kind: 'image',
+    rect: { x: 20, y: 22, width: 45, height: 27 },
+    target: { parentId: parent },
+  })!;
+  expect(app.state.doc.nodes[id]!.parent).toBe(parent);
+  expect(app.state.doc.nodes[id]!.rect).toEqual({ x: 20, y: 22, width: 45, height: 27 });
+  expect([host.bitmaps[id]!.width, host.bitmaps[id]!.height]).toEqual([45, 27]);
+  expect(host.bitmaps[id]!.data.every((n) => n === 0)).toBe(true);
+  expect(host.commits).toBe(commits + 1);
+  const old = JSON.stringify(app.state.doc);
+  expect(
+    app.createDrawn({
+      kind: 'image',
+      rect: { x: 0, y: 0, width: 100000, height: 100000 },
+      target: null,
+    }),
+  ).toBeNull();
+  expect(JSON.stringify(app.state.doc)).toBe(old);
+});
