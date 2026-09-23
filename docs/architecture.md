@@ -118,3 +118,7 @@ CLI 提供字体文件内嵌、fontMap、转换报告、局部预览和预览倍
 原生Property.condition也会在Group撤销副本的构造/reset/copy阶段执行；副本有UUID，但起初没有插件角色标记。PropertyBridge按当前文档bindings对象建立UUID反查索引，同步支持真实对象、撤销副本和选择解析；文档替换时重建，避免每个字段重新扫描全部绑定。hydrate每次只计算一次选区摘要和原生对象表。
 
 撤销仍保留完整原生事务，未改变差异保护、几何/纹理/字体保存契约。文字插件的临时传输资源另外采用宿主instance Property与不可变共享快照，减少复制开销，不依赖改写宿主原型。
+
+## CI 静态发布
+
+GitHub Actions在PR和main验证格式、业务边界、类型、单元测试及构建。prepare-pages脚本校验插件注册ID，生成含稳定JS、下载别名、source map、MIT许可和版本/提交/SHA-256信息的静态站点。仅main的通过构建可部署GitHub Pages；部署权限限定在deploy job，PR不获取发布权限。运行时和模型结构不变。

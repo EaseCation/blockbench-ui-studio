@@ -15,6 +15,18 @@
 
 当前侧重静态 UI 创作，暂不提供游戏运行时导出、Grid、裁切或多人实时协作。完整操作说明见 [使用指南](docs/user-guide.md)。
 
+## 从稳定 URL 安装
+
+在 Blockbench 的插件管理器中选择“从 URL 加载插件”，粘贴：
+
+```text
+https://easecation.github.io/blockbench-ui-studio/mcui_studio.js
+```
+
+[下载页面](https://easecation.github.io/blockbench-ui-studio/)也提供 `latest.js` 下载别名和[版本信息](https://easecation.github.io/blockbench-ui-studio/version.json)。安装时推荐使用上方保留插件 ID 的文件名。
+
+每次推送到 `main`，GitHub Actions 会执行格式检查、类型检查、单元测试和构建，通过后自动更新稳定地址；PR 只验证并上传构建产物，不发布。也可手动运行 CI 工作流。CDN 更新可能有短暂延迟。
+
 ## 构建与加载
 
 需要 **Node.js 22+**；插件当前验证基线为 **Blockbench 5.2.1**，支持桌面版和 Web 版。

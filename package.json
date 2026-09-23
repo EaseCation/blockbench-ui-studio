@@ -12,10 +12,11 @@
     "test:watch": "vitest",
     "test:host": "playwright test",
     "check:boundaries": "node scripts/check-boundaries.mjs",
-    "format": "prettier --write src tests scripts docs skills '*.json' '*.ts' README.md",
-    "format:check": "prettier --check src tests scripts docs skills '*.json' '*.ts' README.md",
+    "format": "prettier --write .github src tests scripts docs skills '*.json' '*.ts' README.md",
+    "format:check": "prettier --check .github src tests scripts docs skills '*.json' '*.ts' README.md",
     "check": "npm run check:boundaries && npm run typecheck && npm test && npm run build",
-    "ui:file": "node skills/ui-studio-bbmodel/scripts/ui-file.mjs"
+    "ui:file": "node skills/ui-studio-bbmodel/scripts/ui-file.mjs",
+    "prepare:pages": "node scripts/prepare-pages.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",
