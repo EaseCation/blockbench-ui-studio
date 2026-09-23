@@ -717,7 +717,7 @@ export function install(bb: HostRuntime) {
   );
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.6.0',
+    version: '0.6.1',
     newProject,
     getStudio: () => current,
     getHost: () => get()?.host,

@@ -1,6 +1,6 @@
-# MC UI Studio v0.6
+# MC UI Studio v0.6.1
 
-面向 Minecraft 像素 UI 的独立 Blockbench 插件。Image 使用原生 Group＋内容 Cube，Frame 使用原生 Group。X/Z 表达布局、Y 表达显示层级；未安装插件也能查看标准模型和贴图。
+面向 Minecraft 像素 UI 的独立 Blockbench 插件。Image 使用原生 Group＋内容 Cube，Frame 使用原生 Group。X/Z 表达布局、Y 高度表达显示层级；内容 Cube 的 Y 厚度为 0，仅顶面使用贴图；未安装插件也能查看标准模型和贴图。
 
 ## 安装与开发
 

@@ -228,7 +228,7 @@ export class NativeHost implements HostPort {
         if (
           surface &&
           binding &&
-          (Math.abs(surface.to[1] - surface.from[1] - 0.1) > 1e-5 ||
+          (Math.abs(surface.to[1] - surface.from[1]) > 1e-5 ||
             surface.rotation?.some((v: number) => Math.abs(v) > 1e-6))
         )
           unsupported = '内容载体的三维几何已改变，二维规则已暂停';
@@ -500,7 +500,7 @@ export class NativeHost implements HostPort {
       const r = resolved.rect,
         depth = resolved.depth;
       element.extend({
-        from: [r.x, depth - 0.1, r.y],
+        from: [r.x, depth, r.y],
         to: [r.x + r.width, depth, r.y + r.height],
         rotation: [0, 0, 0],
         box_uv: false,

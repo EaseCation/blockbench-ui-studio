@@ -66,13 +66,21 @@ test('原生对象、纹理尺寸、Undo 与无插件往返保存', async ({ pag
       count: window.Cube.all.length,
       width: cube.to[0] - cube.from[0],
       height: cube.to[2] - cube.from[2],
+      thickness: cube.to[1] - cube.from[1],
       texWidth: tex.width,
       texHeight: tex.height,
       meta: window.Project.unhandled_root_fields.mcui_studio,
       model: window.Codecs.project.compile({ raw: true, bitmaps: true }),
     };
   });
-  expect(initial).toMatchObject({ count: 1, width: 80, height: 40, texWidth: 80, texHeight: 40 });
+  expect(initial).toMatchObject({
+    count: 1,
+    width: 80,
+    height: 40,
+    thickness: 0,
+    texWidth: 80,
+    texHeight: 40,
+  });
   await expect(page.locator('#panel_element')).toBeVisible();
   await page.screenshot({ path: '.cache/mcui-studio.png' });
   await page.evaluate(() => window.Undo.undo());
@@ -92,6 +100,7 @@ test('原生对象、纹理尺寸、Undo 与无插件往返保存', async ({ pag
   }, initial.model);
   expect(roundtrip.unhandled_root_fields.mcui_studio).toEqual(initial.meta);
   expect(roundtrip.elements).toHaveLength(1);
+  expect(roundtrip.elements[0].from[1]).toBe(roundtrip.elements[0].to[1]);
   await bare.close();
 });
 test('二维交互、视图切换和完整卸载', async ({ page }) => {
@@ -1159,4 +1168,54 @@ test('尺寸策略预检、键盘方向操作和切回自由布局保持位置',
     before.rects,
   );
   await expect(page.getByRole('button', { name: '子项对齐：中中', exact: true })).toBeHidden();
+});
+
+test('零厚度平面的原生命中按 Y 排序，改变厚度时保护原生修改', async ({ page }) => {
+  await start(page);
+  await page.evaluate(() => window.Blockbench.mcuiStudio.newProject());
+  const result = await page.evaluate(() => {
+    const app = window.Blockbench.mcuiStudio.getStudio(),
+      root = app.state.doc.roots[0];
+    const a = app.add('image', root),
+      b = app.add('image', root);
+    const cube = (id: string) =>
+      window.Cube.all.find((c: any) => c.uuid === app.state.doc.bindings[id].surfaceId);
+    const p = window.Preview.selected,
+      r = p.canvas.getBoundingClientRect(),
+      v = new (window as any).THREE.Vector3(24, 0, 24).project(p.camera);
+    const event = new MouseEvent('mousemove', {
+      clientX: r.left + ((v.x + 1) * r.width) / 2,
+      clientY: r.top + ((1 - v.y) * r.height) / 2,
+    });
+    const before = p.raycast(event);
+    const first = {
+      hit: before?.element?.uuid,
+      face: before?.face,
+      upper: cube(b).uuid,
+      ys: [cube(a).to[1], cube(b).to[1]],
+      sizes: window.Cube.all.map((c: any) => c.size(1)),
+    };
+    app.reorder(a, 1);
+    const after = p.raycast(event);
+    const reordered = { hit: after?.element?.uuid, face: after?.face, upper: cube(a).uuid };
+    window.Undo.initEdit({ elements: [cube(a)] });
+    cube(a).from[1] -= 0.25;
+    window.Undo.finishEdit('Edit surface thickness');
+    return {
+      first,
+      reordered,
+      paused: app.state.doc.nodes[a].suspended,
+      thickness: cube(a).size(1),
+      errors: app.state.error,
+    };
+  });
+  expect(result.first.sizes).toEqual([0, 0]);
+  expect(result.first.ys[1]).toBeGreaterThan(result.first.ys[0]);
+  expect(result.first.hit).toBe(result.first.upper);
+  expect(result.first.face).toBe('up');
+  expect(result.reordered.hit).toBe(result.reordered.upper);
+  expect(result.reordered.face).toBe('up');
+  expect(result.paused).toContain('三维几何');
+  expect(result.thickness).toBe(0.25);
+  expect(result.errors).toBeNull();
 });

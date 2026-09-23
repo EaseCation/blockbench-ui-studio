@@ -847,7 +847,7 @@ export class Studio {
       n.children = [...(snap.children ?? [])];
       const before = this.native.get(n.id),
         expected = onOpen ? previous.bindings[n.id]?.fingerprint : before?.fingerprint;
-      if (!hierarchyChanged && expected === snap.fingerprint) continue;
+      if (!snap.unsupported && !hierarchyChanged && expected === snap.fingerprint) continue;
       changed = true;
       n.name = snap.name;
       n.visible = snap.visible;
