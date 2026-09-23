@@ -52,6 +52,10 @@ npm run test:host     # 独立 Blockbench Web 宿主集成测试
 
 宿主测试额外需要系统 Google Chrome 和已构建的 Blockbench Web 测试副本；准备步骤见 [测试宿主](docs/testing.md)。测试使用独立浏览器上下文，不接入用户正在编辑的桌面项目。
 
+## 性能实验
+
+[统一性能实验记录](docs/performance-round2.md)说明复杂文档的测量方法、优化边界和剩余开销。仓库提供 `scripts/benchmark-host.mjs`，可对包含Image和可编辑文字的本地模型进行隔离测试，输出计时和CPU采样；支持指定旧版bundle作同机对照，不修改输入设计。
+
 ## AI Skill
 
 入口为 [`skills/ui-studio-bbmodel/SKILL.md`](skills/ui-studio-bbmodel/SKILL.md)。它与仓库实现一起维护，依赖本仓库的 `src/`、Node.js 依赖和测试宿主，不能只复制技能目录后独立运行。

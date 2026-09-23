@@ -194,3 +194,41 @@ describe('可测量内容', () => {
     expect(() => layout(d, measure)).toThrow(/循环/);
   });
 });
+
+describe('大规模 Fill 分配', () => {
+  it('一次分配整组约束并保留共享边界，下一次布局重新计算', () => {
+    const d = createDocument('large'),
+      p = createNode('p', 'stack', 'frame', { x: 0, y: 0, width: 19500, height: 40 });
+    d.nodes.p = p;
+    d.roots = ['p'];
+    p.frame = { ...defaultFrame(), engineType: 'stack_panel', direction: 'row', gap: 0 };
+    for (let i = 0; i < 1500; i++) {
+      const n = createNode('n' + i, 'item', 'image', { x: 0, y: 0, width: 10, height: 10 });
+      n.parent = p.id;
+      n.layout.width = { kind: 'fill' };
+      if (i % 10 === 0) n.layout.maxWidth = 5;
+      d.nodes[n.id] = n;
+      p.children.push(n.id);
+    }
+    const start = performance.now(),
+      scene = layout(d);
+    expect(performance.now() - start).toBeLessThan(250);
+    for (let i = 0; i < 1500; i++) {
+      const r = scene.nodes['n' + i]!.rect;
+      if (i % 10 === 0) expect(r.width).toBe(5);
+      if (i > 0) {
+        const before = scene.nodes['n' + (i - 1)]!.rect;
+        expect(r.x).toBe(before.x + before.width);
+      }
+    }
+    const last = scene.nodes.n1499!.rect;
+    expect(last.x + last.width).toBe(19500);
+    p.layout.width = fixed(21000);
+    const resized = layout(d).nodes.n1499!.rect;
+    expect(resized.x + resized.width).toBe(21000);
+    expect(() => {
+      p.layout.width = { kind: 'hug' };
+      layout(d);
+    }).toThrow(/循环/);
+  });
+});

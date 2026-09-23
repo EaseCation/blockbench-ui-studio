@@ -61,3 +61,83 @@ test('复杂文档的普通位置编辑不因原生属性快照而停顿，Undo/
   // Coarse stall guard; detailed before/after profiles are recorded separately on the same machine.
   expect(result.times.sort((a, b) => a - b)[1]).toBeLessThan(750);
 });
+
+test('选区走轻量查询；投影缓存随相机、节点和标签变化失效', async ({ page }) => {
+  await page.route(/https:\/\/(cdn.jsdelivr.net|blckbn.ch).*plugins.*json/, (r) =>
+    r.fulfill({ json: {} }),
+  );
+  await page.goto(`http://127.0.0.1:${process.env.MCUI_HOST_PORT ?? '4178'}`);
+  await page.waitForFunction(() => !!window.Blockbench?.setup_successful);
+  await page.evaluate(() => {
+    window.Plugins.registered.mcui_studio = new window.Blockbench.Plugin('mcui_studio');
+  });
+  await page.addScriptTag({ content: bundle });
+  const result = await page.evaluate(async () => {
+    const w = window as any;
+    await w.Blockbench.mcuiStudio.newProject();
+    const app = w.Blockbench.mcuiStudio.getStudio(),
+      host = w.Blockbench.mcuiStudio.getHost(),
+      vp = w.Blockbench.mcuiStudio.getViewport();
+    const root = app.state.doc.roots[0],
+      a = app.add('image', root),
+      child = app.add('image', a),
+      b = app.add('image', root);
+    app.update(b, (n: any) => (n.layout.offset.x = 100));
+    const full = host.scene.bind(host);
+    let scans = 0;
+    host.scene = (...args: any[]) => {
+      scans++;
+      return full(...args);
+    };
+    app.select([a]);
+    const selected = [...app.state.selection],
+      actual = host.selection(app.state.doc),
+      snap = full(app.state.doc).selection;
+    const selectionScans = scans;
+    const preview = w.Preview.selected;
+    vp.pickNodes(preview);
+    let rectReads = 0;
+    const read = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      rectReads++;
+      return read.call(this);
+    };
+    const before = vp.pickNodes(preview).find((n: any) => n.id === a).rect;
+    for (let i = 0; i < 20; i++) vp.draw();
+    Element.prototype.getBoundingClientRect = read;
+    preview.camOrtho.zoom *= 2;
+    preview.camOrtho.updateProjectionMatrix();
+    const zoomed = vp.pickNodes(preview).find((n: any) => n.id === a).rect;
+    app.update(a, (n: any) => (n.layout.offset.x += 10));
+    const moved = vp.pickNodes(preview).find((n: any) => n.id === a).rect;
+    app.update(root, (n: any) => (n.name = 'Renamed frame'));
+    vp.draw();
+    const renamed = !!document.querySelector('[data-mcui-label]')?.textContent?.includes('Renamed');
+    app.select([child]);
+    const nested = host.selection(app.state.doc);
+    return {
+      selected,
+      actual,
+      snap,
+      a,
+      child,
+      nested,
+      selectionScans,
+      rectReads,
+      before,
+      zoomed,
+      moved,
+      renamed,
+      error: app.state.error,
+    };
+  });
+  expect(result.selected).toEqual([result.a]);
+  expect(result.actual).toEqual(result.snap);
+  expect(result.selectionScans).toBe(0);
+  expect(result.nested).toEqual([result.child]);
+  expect(result.rectReads).toBeLessThan(300);
+  expect(result.zoomed.width).toBeCloseTo(result.before.width * 2, 1);
+  expect(result.moved.x).not.toBe(result.zoomed.x);
+  expect(result.renamed).toBe(true);
+  expect(result.error).toBeNull();
+});

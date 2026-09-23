@@ -8,9 +8,10 @@ const generated = (value: unknown): value is GeneratedRecipe =>
   !!value && (value as GeneratedRecipe).kind === 'generated';
 /** Recipe data is an in-memory draft; its persisted authority is the native surface. */
 export function hydrateContents(doc: UiDocument, project: HostObject) {
+  const cubes = new Map<string, HostObject>(project.elements.map((e: HostObject) => [e.uuid, e]));
   for (const [id, n] of Object.entries(doc.nodes)) {
     const cubeId = doc.bindings[id]?.surfaceId;
-    const cube = project.elements.find((e: HostObject) => e.uuid === cubeId);
+    const cube = cubes.get(cubeId ?? '');
     for (const c of [n.content, n.originalContent]) {
       if (!generated(c) || !safe(c.provider)) continue;
       const value =
@@ -27,10 +28,11 @@ export function persistContents(doc: UiDocument, project: HostObject): UiDocumen
   delete saved.contentResources;
   project.unhandled_root_fields ??= {};
   const previous: UiDocument | undefined = project.unhandled_root_fields.mcui_studio?.document;
+  const cubes = new Map<string, HostObject>(project.elements.map((e: HostObject) => [e.uuid, e]));
   for (const [id, n] of Object.entries(doc.nodes)) {
     const cubeId = doc.bindings[id]?.surfaceId;
     if (!cubeId) continue;
-    const cube = project.elements.find((e: HostObject) => e.uuid === cubeId);
+    const cube = cubes.get(cubeId ?? '');
     const recipes = [n.content, n.originalContent].filter(generated);
     const prior = [previous?.nodes[id]?.content, previous?.nodes[id]?.originalContent].filter(
       generated,

@@ -1,3 +1,4 @@
+import { BindingIndex } from './binding-index';
 import { fields as all, type Field } from './property-fields';
 import { InspectorPanels } from './inspector-panels';
 import { stepExpression } from '../../domain/expression';
@@ -21,20 +22,7 @@ export class PropertyBridge {
   private selectionKey = '';
   private tabsKey = '';
   private refreshing = false;
-  private indexedBindings: UiDocument['bindings'] | null = null;
-  private nativeIds = new Map<string, Id>();
-  private lookup(doc: UiDocument) {
-    if (this.indexedBindings !== doc.bindings) {
-      this.indexedBindings = doc.bindings;
-      this.nativeIds = new Map(
-        Object.entries(doc.bindings).flatMap(
-          ([id, b]) =>
-            [[b.containerId, id], ...(b.surfaceId ? [[b.surfaceId, id]] : [])] as [string, Id][],
-        ),
-      );
-    }
-    return this.nativeIds;
-  }
+  private bindings = new BindingIndex();
 
   private panels: HostObject[] = [];
   private inspector: InspectorPanels;
@@ -83,7 +71,7 @@ export class PropertyBridge {
   targets(): UiNode[] {
     const app = this.current();
     if (!app) return [];
-    const lookup = this.lookup(app.state.doc);
+    const lookup = this.bindings.get(app.state.doc);
     const raw = [...this.bb.Outliner.selected, ...this.bb.Group.multi_selected];
     if (raw.some((e) => !lookup.has(e.uuid))) return [];
     return topSelection(app.state.doc, [...new Set(raw.map((e) => lookup.get(e.uuid)!))]).map(
@@ -96,7 +84,7 @@ export class PropertyBridge {
       const app = this.current()!;
       // Undo constructs temporary Groups with a UUID but without hydrated markers.
       // Resolve those through a document-scoped index as well as live objects.
-      const id = this.lookup(app.state.doc).get(node.uuid);
+      const id = this.bindings.get(app.state.doc).get(node.uuid);
       const n =
         id && app.state.doc.bindings[id]?.containerId === node.uuid
           ? app.state.doc.nodes[id]

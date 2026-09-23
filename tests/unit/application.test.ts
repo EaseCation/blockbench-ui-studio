@@ -23,6 +23,9 @@ class MemoryHost implements HostPort {
   scene(doc: UiDocument) {
     return { nodes: this.snapshots(), roots: doc.roots, selection: [] };
   }
+  selection() {
+    return [];
+  }
   unmanaged() {
     return [];
   }

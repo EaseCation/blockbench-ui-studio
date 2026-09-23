@@ -678,7 +678,7 @@ export function install(bb: HostRuntime) {
     bb.Blockbench.on('update_selection', () => {
       const entry = get();
       if (!entry || entry.app.applying) return;
-      entry.app.reflectSelection(entry.host.scene(entry.app.state.doc).selection);
+      entry.app.reflectSelection(entry.host.selection(entry.app.state.doc));
       entry.host.syncSelectedTexture(entry.app.state.doc, entry.app.state.selection);
       properties.refresh();
     }),
@@ -751,7 +751,7 @@ export function install(bb: HostRuntime) {
     bb.Blockbench.on('finished_edit', () => {
       const entry = get();
       if (entry && !entry.app.applying) {
-        entry.app.reflectSelection(entry.host.scene(entry.app.state.doc).selection);
+        entry.app.reflectSelection(entry.host.selection(entry.app.state.doc));
         properties.refresh();
       }
     }),
@@ -760,7 +760,7 @@ export function install(bb: HostRuntime) {
   life.add(() => contents.dispose());
   // Small diagnostic surface for contract tests and local integrations; removed on unload.
   bb.Blockbench.mcuiStudio = {
-    version: '0.8.2',
+    version: '0.8.3',
     contents: contents.api,
     newProject,
     getStudio: () => current,

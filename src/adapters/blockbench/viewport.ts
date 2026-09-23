@@ -1,3 +1,4 @@
+import { BindingIndex } from './binding-index';
 import { UiGrid } from './ui-grid';
 import {
   pickNode,
@@ -368,14 +369,30 @@ export class ViewportController {
     ).unproject(preview.camera);
     return { x: v.x, y: v.z };
   }
-  private screen(point: Point, preview: HostObject): Point {
-    const v = new this.bb.THREE.Vector3(point.x, 0, point.y).project(preview.camera);
+  private projector(preview: HostObject) {
     const r = preview.canvas.getBoundingClientRect(),
       nr = preview.node.getBoundingClientRect();
+    const vector = new this.bb.THREE.Vector3();
     return {
-      x: Math.round((((v.x + 1) * r.width) / 2 + r.left - nr.left) * 100) / 100,
-      y: Math.round((((1 - v.y) * r.height) / 2 + r.top - nr.top) * 100) / 100,
+      key: [
+        r.width,
+        r.height,
+        r.left - nr.left,
+        r.top - nr.top,
+        ...preview.camera.projectionMatrix.elements,
+        ...preview.camera.matrixWorldInverse.elements,
+      ].join(','),
+      project: (point: Point): Point => {
+        vector.set(point.x, 0, point.y).project(preview.camera);
+        return {
+          x: Math.round((((vector.x + 1) * r.width) / 2 + r.left - nr.left) * 100) / 100,
+          y: Math.round((((1 - vector.y) * r.height) / 2 + r.top - nr.top) * 100) / 100,
+        };
+      },
     };
+  }
+  private screen(point: Point, preview: HostObject): Point {
+    return this.projector(preview).project(point);
   }
   private screenRect(r: Rect, p: HostObject): Rect {
     const a = this.screen({ x: r.x, y: r.y }, p),
@@ -387,10 +404,9 @@ export class ViewportController {
       height: Math.abs(a.y - b.y),
     };
   }
+  private bindings = new BindingIndex();
   private nodeId(uuid: string): Id | null {
-    const id = Object.entries(this.studio.state.doc.bindings).find(
-      ([, b]) => b.containerId === uuid || b.surfaceId === uuid,
-    )?.[0];
+    const id = this.bindings.get(this.studio.state.doc).get(uuid);
     const n = id ? this.studio.state.scene.nodes[id] : undefined;
     return n?.visible && !n.locked ? id! : null;
   }
@@ -408,13 +424,31 @@ export class ViewportController {
     const rect = preview.node.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
+  private picks = new WeakMap<
+    HostObject,
+    { doc: unknown; scene: unknown; key: string; nodes: PickNode[] }
+  >();
   private pickNodes(preview: HostObject): PickNode[] {
     const { doc, scene, selection } = this.studio.state;
+    const projection = this.projector(preview);
+    const key = JSON.stringify([projection.key, selection, this.hover, this.dropTarget?.parentId]);
+    const cached = this.picks.get(preview);
+    if (cached?.doc === doc && cached.scene === scene && cached.key === key) return cached.nodes;
     if (this.labelContext) this.labelContext.font = '12px sans-serif';
-    return scene.order.map((id) => {
+    const nodes = scene.order.map((id) => {
       const n = doc.nodes[id]!,
         resolved = scene.nodes[id]!,
-        rect = this.screenRect(resolved.rect, preview);
+        a = projection.project(resolved.rect),
+        b = projection.project({
+          x: resolved.rect.x + resolved.rect.width,
+          y: resolved.rect.y + resolved.rect.height,
+        }),
+        rect = {
+          x: Math.min(a.x, b.x),
+          y: Math.min(a.y, b.y),
+          width: Math.abs(b.x - a.x),
+          height: Math.abs(b.y - a.y),
+        };
       let level = 0,
         parent = n.parent;
       while (parent) {
@@ -450,6 +484,8 @@ export class ViewportController {
         disabled: !resolved.visible || resolved.locked || !!n.suspended,
       };
     });
+    this.picks.set(preview, { doc, scene, key, nodes });
+    return nodes;
   }
   private hit(event: MouseEvent, preview: HostObject): Id | null {
     return pickNode(this.pickNodes(preview), this.local(event, preview));

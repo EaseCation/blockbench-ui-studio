@@ -36,6 +36,7 @@ export interface ProjectPort {
   snapshots(doc: UiDocument): Record<Id, NativeSnapshot>;
   unmanaged(doc: UiDocument): NativeSnapshot[];
   scene(doc: UiDocument): NativeSceneSnapshot;
+  selection(doc: UiDocument): Id[];
 }
 export interface ScenePort {
   apply(

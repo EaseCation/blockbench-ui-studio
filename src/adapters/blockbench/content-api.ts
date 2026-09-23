@@ -1,3 +1,4 @@
+import { BindingIndex } from './binding-index';
 import {
   contentProviders,
   type ContentData,
@@ -9,6 +10,7 @@ import type { HostObject, HostRuntime } from './runtime';
 /** Public v1 contract. Never exposes Studio, NativeHost, or native objects. */
 export function contentApi(bb: HostRuntime, current: () => Studio | null) {
   const updates = new Map<string, number>();
+  const bindings = new BindingIndex();
   let draft: { app: Studio; id: string; data: ContentData } | null = null;
   const cancel = () => {
     if (draft) draft.app.endGesture(false);
@@ -55,9 +57,7 @@ export function contentApi(bb: HostRuntime, current: () => Studio | null) {
     owner(uuid: string) {
       const app = current();
       if (!app) return null;
-      const id = Object.entries(app.state.doc.bindings).find(
-        ([, b]) => b.surfaceId === uuid || b.containerId === uuid,
-      )?.[0];
+      const id = bindings.get(app.state.doc).get(uuid);
       return id ? inspect(id) : null;
     },
     async update(id: string, data: ContentData) {

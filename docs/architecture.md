@@ -122,3 +122,11 @@ CLI 提供字体文件内嵌、fontMap、转换报告、局部预览和预览倍
 ## CI 静态发布
 
 GitHub Actions在PR和main验证格式、业务边界、类型、单元测试及构建。prepare-pages脚本校验插件注册ID，生成含稳定JS、下载别名、source map、MIT许可和版本/提交/SHA-256信息的静态站点。仅main的通过构建可部署GitHub Pages；部署权限限定在deploy job，PR不获取发布权限。运行时和模型结构不变。
+
+## 统一性能边界（0.8.3）
+
+BindingIndex按bindings对象引用统一反查逻辑ID，用于属性、内容API、视口和选区。NativeHost在活动项目使用宿主OutlinerNode.uuids注册表，后台项目保留项目内查找。ProjectPort.selection只解析真实选区及原生祖先关系；场景快照继续独立负责完整几何与像素差异检查。
+
+布局计算的flow列表与Fill分配按父级/轴在单次求解内共享，跨次布局重新计算，保留循环检测和共享边界量化。视口一次投影遍历只读一次canvas/node边界；命中几何缓存按文档/scene引用、相机矩阵、边界、选区、悬停及放入标签状态失效，归属于预览对象的WeakMap。
+
+NativeHost的像素哈希以实际PNG输入为依据，每个Texture只保留最近一次结果；不改变指纹算法或绕过外部绘画检测。原生完整Undo继续保留，未引入对宿主原型或纹理解析规则的覆盖。实验脚本与当前测量见performance-round2.md。

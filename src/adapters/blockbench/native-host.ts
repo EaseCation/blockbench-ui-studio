@@ -1,3 +1,4 @@
+import { BindingIndex } from './binding-index';
 import { contentProviders } from '../../application/content';
 import { hydrateContents, persistContents } from './content-carrier';
 import type { HostPort, NativeSnapshot, NativeSceneSnapshot } from '../../application/ports';
@@ -127,6 +128,7 @@ export class NativeHost implements HostPort {
     Object.assign(event.aspects, aspects);
   }
   private element(id: string) {
+    if (this.active()) return this.bb.OutlinerNode.uuids[id];
     return (
       this.project.elements.find((e: HostObject) => e.uuid === id) ??
       this.project.groups.find((e: HostObject) => e.uuid === id)
@@ -135,8 +137,15 @@ export class NativeHost implements HostPort {
   private texture(id: string) {
     return this.project.textures.find((t: HostObject) => t.uuid === id);
   }
+  private pixelHashes = new WeakMap<HostObject, { source: string; hash: string }>();
   private pixelFingerprint(texture: HostObject): string {
-    return texture ? hashString(texture.getDataURL()) : '';
+    if (!texture) return '';
+    const source = texture.getDataURL();
+    const old = this.pixelHashes.get(texture);
+    if (old && old.source === source) return old.hash;
+    const hash = hashString(source);
+    this.pixelHashes.set(texture, { source, hash });
+    return hash;
   }
   owner(doc: UiDocument, uuid: string): Id | null {
     return (
@@ -163,6 +172,41 @@ export class NativeHost implements HostPort {
       mesh.updateMatrixWorld(true);
     }
     this.previewPositions.clear();
+  }
+  private bindingsIndex = new BindingIndex();
+  /** Selection changes need roles and ancestry, not a complete texture/fingerprint snapshot. */
+  selection(doc: UiDocument): Id[] {
+    const lookup = this.bindingsIndex.get(doc);
+    const selected = [...this.project.selected_elements, ...(this.project.selected_groups ?? [])];
+    const nativeSelected = new Set(selected.map((e: HostObject) => e.uuid));
+    const candidates = new Set<Id>(
+      selected
+        .map((e: HostObject) => lookup.get(e.uuid))
+        .filter((id: Id | undefined): id is Id => !!id && !!doc.nodes[id]),
+    );
+    const explicit = new Set<Id>();
+    for (const id of candidates) {
+      let parent = this.element(doc.bindings[id]!.containerId)?.parent;
+      let inherited = false;
+      while (parent && parent !== 'root') {
+        if (nativeSelected.has(parent.uuid) || candidates.has(lookup.get(parent.uuid) ?? '')) {
+          inherited = true;
+          break;
+        }
+        parent = parent.parent;
+      }
+      if (!inherited) explicit.add(id);
+    }
+    const result: Id[] = [];
+    const walk = (items: HostObject[]) => {
+      for (const e of items) {
+        const id = lookup.get(e.uuid);
+        if (id && explicit.has(id) && doc.bindings[id]?.containerId === e.uuid) result.push(id);
+        if (e instanceof this.bb.Group) walk(e.children);
+      }
+    };
+    if (explicit.size) walk(this.project.outliner);
+    return result;
   }
   scene(doc: UiDocument): NativeSceneSnapshot {
     const scene: NativeSceneSnapshot = { nodes: {}, roots: [], selection: [] };
@@ -611,7 +655,7 @@ export class NativeHost implements HostPort {
   }
   select(doc: UiDocument, ids: Id[]) {
     if (!this.active()) return;
-    const selected = topSelection(doc, this.scene(doc).selection);
+    const selected = topSelection(doc, this.selection(doc));
     if (JSON.stringify([...selected].sort()) === JSON.stringify([...ids].sort())) {
       this.syncSelectedTexture(doc, ids);
       return;

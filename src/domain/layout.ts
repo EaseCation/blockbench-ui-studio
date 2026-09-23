@@ -14,8 +14,16 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
     if (!n) throw new Error(`图层不存在: ${id}`);
     return n;
   };
-  const flow = (n: UiNode) =>
-    n.children.map(node).filter((c) => c.visible && c.layout.positioning === 'flow');
+  const flows = new Map<Id, UiNode[]>();
+  const allocationsByParent = new Map<string, Map<Id, number>>();
+  const flow = (n: UiNode) => {
+    let result = flows.get(n.id);
+    if (!result) {
+      result = n.children.map(node).filter((c) => c.visible && c.layout.positioning === 'flow');
+      flows.set(n.id, result);
+    }
+    return result;
+  };
   function limits(n: UiNode, axis: Axis, value: number): number {
     const nine = n.content?.kind === 'nine-slice' ? n.content : null;
     const border = nine
@@ -101,27 +109,32 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
             (axis === 'height' && f.direction === 'column'));
         if (!linear) value = available;
         else {
-          const children = flow(parent),
-            fills = children.filter((c) => c.layout[axis].kind === 'fill');
-          let remaining = available - Math.max(0, children.length - 1) * f.gap;
-          for (const c of children)
-            if (c.layout[axis].kind !== 'fill') remaining -= measure(c, axis);
-          // Redistribute after min/max constraints, so a clamped Fill does not leave unused space.
-          let pending = [...fills];
-          const allocations = new Map<Id, number>();
-          while (pending.length) {
-            const share = remaining / pending.length;
-            const clamped = pending.filter((c) => limits(c, axis, share) !== share);
-            if (!clamped.length) {
-              for (const c of pending) allocations.set(c.id, share);
-              break;
+          const allocationKey = `${parent.id}:${axis}`;
+          let allocations = allocationsByParent.get(allocationKey);
+          if (!allocations) {
+            const children = flow(parent),
+              fills = children.filter((c) => c.layout[axis].kind === 'fill');
+            let remaining = available - Math.max(0, children.length - 1) * f.gap;
+            for (const c of children)
+              if (c.layout[axis].kind !== 'fill') remaining -= measure(c, axis);
+            // Redistribute after min/max constraints, so a clamped Fill does not leave unused space.
+            let pending = [...fills];
+            allocations = new Map<Id, number>();
+            while (pending.length) {
+              const share = remaining / pending.length;
+              const clamped = pending.filter((c) => limits(c, axis, share) !== share);
+              if (!clamped.length) {
+                for (const c of pending) allocations.set(c.id, share);
+                break;
+              }
+              for (const c of clamped) {
+                const v = limits(c, axis, share);
+                allocations.set(c.id, v);
+                remaining -= v;
+              }
+              pending = pending.filter((c) => !allocations!.has(c.id));
             }
-            for (const c of clamped) {
-              const v = limits(c, axis, share);
-              allocations.set(c.id, v);
-              remaining -= v;
-            }
-            pending = pending.filter((c) => !allocations.has(c.id));
+            allocationsByParent.set(allocationKey, allocations);
           }
           value = allocations.get(n.id) ?? 0;
         }
