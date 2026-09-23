@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["skills/ui-studio-bbmodel/scripts/host-bridge.ts"],
+  "exclude": []
+}

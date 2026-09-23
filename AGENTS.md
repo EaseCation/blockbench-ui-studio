@@ -8,3 +8,5 @@
 - 新功能或修改后运行 `npm run check`；宿主接入、保存、绘画和交互变更还要运行 `npm run test:host`。
 - 真实宿主测试使用独立缓存副本和浏览器上下文。不要安装到用户正在使用的 Blockbench 配置目录。
 - 自动化事件测试不等同于真实 Mac 触摸板手感验证；在验证记录中区分两者。
+
+- 创建或编辑 UI Studio `.bbmodel` 设计文件时，先读取 `skills/ui-studio-bbmodel/SKILL.md`，使用配套文件脚本校验逻辑数据与原生载体。普通插件代码开发不需要调用该技能。

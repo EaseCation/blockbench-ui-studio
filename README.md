@@ -150,3 +150,17 @@ npm run test:host        # 真实 Blockbench 页面集成测试
 ### 可编辑文字（整合构建）
 
 同时加载 BBModel Text Component v0.2.0 后，使用大纲「添加文字」创建文字 Image；双击进入实时文字编辑器，或在原生「文字」标签修改排版。UI 布局继续管理宽高和定位，支持百分比宽度、自动换行高度和 Stack 排列。文字内容为普通零厚度 Cube 和内嵌 PNG，卸载文字插件后仍可显示、移动和缩放成品。该能力使用 `Blockbench.mcuiStudio.contents.version === 1` 的独立扩展接口。
+
+## AI 直接编辑设计文件
+
+仓库内提供 [ui-studio-bbmodel 技能](skills/ui-studio-bbmodel/SKILL.md)，指导 AI 创建、提取、编辑及验证 UI Studio 文件。配套 CLI 使用独立无头宿主生成标准 bbmodel 与 PNG 预览，不需要操作用户的桌面会话。
+
+```sh
+npm run ui:file -- build skills/ui-studio-bbmodel/assets/example.design.json --out work/example.bbmodel --preview work/example.png
+npm run ui:file -- inspect work/example.bbmodel
+npm run ui:file -- extract work/example.bbmodel --out work/edit.design.json
+npm run ui:file -- build work/edit.design.json --base work/example.bbmodel --out work/edited.bbmodel
+npm run ui:file -- validate work/edited.bbmodel
+```
+
+需要当前仓库依赖、系统 Chrome 和构建好的测试宿主；详情见技能环境说明。设计描述是完整目标树，修改文件时保留 ID 并使用 `--base`，避免无意删除未列出的图层。文字扩展只保留既有成品，不假装支持无字体/provider 的重新排版。

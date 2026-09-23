@@ -100,3 +100,9 @@ shortcuts 适配器注册原生 Action/Keybind，读取用户当前键位并在�
 stepExpression 纯数据转换保留百分比，input-step 与 input-scrub 适配器统一键盘步进和指针状态；后者处理局部预览、速度档位、捕获、取消及生命周期。InspectorPanels 的写入在拖拽期间转到 Studio.previewGesture；元素页 PairDraft 使用同一应用事务提交，避免原生中间值回读将百分比还原为固定值。显式原生 Property 接口仍保留。
 
 预览对话框复用相同输入手势但只改本地 form，确认才写文档。宿主项目离开事件发生时全局 Project 可能已清空；NativeHost.cancel 使用原项目 Undo，并在非活动状态通过原生 whenNextOpen 回调恢复，避免向下一项目回放撤销。
+
+## 文件创作技能
+
+`skills/ui-studio-bbmodel` 提供 AI 说明、设计描述、CLI 和独立宿主桥。CLI 只负责本地路径、PNG、临时 loopback 服务、无头 Chrome 和原子输出；host-bridge 复用纯布局/像素内核及 NativeHost，输出由 Blockbench codec 序列化。编译后再在全新页面重开检查 fingerprint/暂停规则，避免只更新逻辑或只更新原生数据。
+
+--base 以逻辑 ID 保留绑定及原生绘画层；显式替换某个源图才使该源的绘画层备份失效。输入不是部分补丁，而是完整目标树。第三方 generated 内容仅在几何/规则/层级深度未受影响时保留，改变时拒绝并要求通过 provider 编辑。桥接代码由 tsconfig.authoring.json 参与类型检查，不被打包进运行时插件。

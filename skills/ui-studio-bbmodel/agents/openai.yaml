@@ -1,0 +1,4 @@
+interface:
+  display_name: 'UI Studio 文件设计'
+  short_description: '直接创建和编辑兼容 UI Studio 的 bbmodel 界面设计文件'
+  default_prompt: '使用 $ui-studio-bbmodel 创建或修改 UI Studio 界面设计，生成经过校验的 bbmodel 和预览图。'

@@ -1,3 +1,18 @@
+# AI 文件创作技能验证
+
+2026-09-23。仓库新增 ui-studio-bbmodel 技能、格式参考、示例设计与 ui-file CLI，未修改运行时插件功能。
+
+- skill-creator 的 quick_validate.py 通过。
+- `npm run check` 通过：依赖边界、TypeScript（包含新增 authoring 配置）、68 项既有单元测试及插件构建。
+- `MCUI_HOST_PORT=4193 npm run test:host -- tests/host/authoring.spec.ts --output=.cache/authoring-final-tests`：4 项端到端宿主场景通过。
+- 覆盖示例创建后有/无插件打开、百分比尺寸驱动、零厚度与高清纹理、按 base 保留 UUID/原生绘画层/额外 root 字段，拒绝原生差异/尺寸循环/默认覆盖，generated 来源保留与变更拒绝，本地 PNG 相对路径、任意 cwd 调用、force 备份及独立 validate/inspect。
+- 补充以 mcui\_ 开头的第三方 provider 字段保留后，相关拒绝/保留场景定向重跑通过。
+- 示例同时生成 bbmodel 与 PNG，在干净宿主重新打开校验通过；人工检查二维预览。
+
+CLI 使用当前仓库依赖、已构建 Blockbench Web 宿主和无头 Chrome；启动随机 loopback 端口，阻断外部 HTTP 资源，不使用用户浏览器配置或桌面会话。generated 内容仅保留既有成品，不能离线重排文字；普通 3D 文件与差异现场不会被自动转换/覆盖。技能内部说明了这一边界。
+
+---
+
 # v0.8.1 数值输入交互验证
 
 2026-09-23。参考 Figma 官方 Scrub fields 后实现标签拖动与 Option/Alt 输入框拖动，以及统一 ↑/↓ 数值步进。

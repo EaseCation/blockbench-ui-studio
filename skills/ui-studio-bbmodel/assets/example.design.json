@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "name": "Inventory UI",
+  "assets": {
+    "panel-slice": {
+      "width": 9,
+      "height": 9,
+      "palette": { "a": "#0b1220", "b": "#60718d", "c": "#27354c" },
+      "rows": [
+        "aaaaaaaaa",
+        "abbbbbbba",
+        "abcccccba",
+        "abcccccba",
+        "abcccccba",
+        "abcccccba",
+        "abcccccba",
+        "abbbbbbba",
+        "aaaaaaaaa"
+      ]
+    },
+    "gem": {
+      "width": 8,
+      "height": 8,
+      "palette": { ".": "#00000000", "b": "#187d9d", "c": "#56d8df", "h": "#ccfff3" },
+      "rows": [
+        "..bbbb..",
+        ".bchhcb.",
+        "bcchhccb",
+        "bcccccbb",
+        ".bccbbb.",
+        "..bbbb..",
+        "...bb...",
+        "........"
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "screen",
+      "name": "Inventory",
+      "kind": "frame",
+      "width": 240,
+      "height": 144,
+      "children": [
+        {
+          "id": "background",
+          "kind": "image",
+          "name": "Panel",
+          "x": 0,
+          "y": 0,
+          "width": "100%",
+          "height": "100%",
+          "content": {
+            "kind": "nine-slice",
+            "source": "panel-slice",
+            "insets": [3, 3, 3, 3],
+            "mode": "tile"
+          },
+          "children": [
+            {
+              "id": "items",
+              "kind": "frame",
+              "name": "Item row",
+              "x": 16,
+              "y": 20,
+              "width": "100% - 32px",
+              "height": 64,
+              "direction": "row",
+              "gap": 8,
+              "justify": "space-between",
+              "align": "center",
+              "padding": [4, 4, 4, 4],
+              "children": [
+                {
+                  "id": "slot-a",
+                  "kind": "image",
+                  "name": "Gem slot",
+                  "width": 48,
+                  "height": 48,
+                  "appearance": {
+                    "fill": "solid",
+                    "color": "#152033",
+                    "strokeColor": "#7791ba",
+                    "strokeWidth": 1
+                  },
+                  "children": [
+                    {
+                      "id": "gem",
+                      "kind": "image",
+                      "name": "Gem",
+                      "width": 24,
+                      "height": 24,
+                      "anchorFrom": [0.5, 0.5],
+                      "anchorTo": [0.5, 0.5],
+                      "rasterSize": { "width": 8, "height": 8 },
+                      "content": { "kind": "image", "source": "gem", "mode": "original" }
+                    }
+                  ]
+                },
+                {
+                  "id": "slot-b",
+                  "kind": "image",
+                  "name": "Empty slot",
+                  "width": 48,
+                  "height": 48,
+                  "appearance": {
+                    "fill": "solid",
+                    "color": "#152033",
+                    "strokeColor": "#405675",
+                    "strokeWidth": 1
+                  }
+                },
+                {
+                  "id": "slot-c",
+                  "kind": "image",
+                  "name": "Empty slot",
+                  "width": 48,
+                  "height": 48,
+                  "appearance": {
+                    "fill": "solid",
+                    "color": "#152033",
+                    "strokeColor": "#405675",
+                    "strokeWidth": 1
+                  }
+                }
+              ]
+            },
+            {
+              "id": "button",
+              "kind": "image",
+              "name": "Action button",
+              "width": "50% - 8px",
+              "height": 28,
+              "x": 0,
+              "y": -16,
+              "anchorFrom": [0.5, 1],
+              "anchorTo": [0.5, 1],
+              "appearance": {
+                "fill": "linear",
+                "color": "#299fac",
+                "endColor": "#13556e",
+                "angle": 90,
+                "strokeColor": "#a0f1e1",
+                "strokeWidth": 1
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
