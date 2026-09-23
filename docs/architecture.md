@@ -112,3 +112,9 @@ stepExpression 纯数据转换保留百分比，input-step 与 input-scrub 适�
 文件工具新增 convert-source 宿主桥，先通过原生 codec 与文字插件 convertLegacy 读取，再按选定顶视方向烘焙纹理。叶子以真实世界 Y 排序，通过连续原 Group 路径重建 Frame，避免文件夹深度交错导致背景遮挡。三维 Group 只在 flattenGroups 显式列出时压平；非正向文字拒绝隐式旋转。转换只是文件创作工具，不修改运行时插件或放宽 schemaVersion 1 校验。
 
 CLI 提供字体文件内嵌、fontMap、转换报告、局部预览和预览倍率；build/extract 的 text 描述由 provider 处理。每次生成仍经干净宿主重开验证，输出不覆盖原文件，私有转换素材不进入仓库。
+
+## 复杂项目属性查询（0.8.2）
+
+原生Property.condition也会在Group撤销副本的构造/reset/copy阶段执行；副本有UUID，但起初没有插件角色标记。PropertyBridge按当前文档bindings对象建立UUID反查索引，同步支持真实对象、撤销副本和选择解析；文档替换时重建，避免每个字段重新扫描全部绑定。hydrate每次只计算一次选区摘要和原生对象表。
+
+撤销仍保留完整原生事务，未改变差异保护、几何/纹理/字体保存契约。文字插件的临时传输资源另外采用宿主instance Property与不可变共享快照，减少复制开销，不依赖改写宿主原型。

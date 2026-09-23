@@ -1,6 +1,6 @@
 {
   "name": "blockbench-mcui",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "type": "module",
   "description": "A portable pixel UI authoring workbench for Blockbench",

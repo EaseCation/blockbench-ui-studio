@@ -21,6 +21,21 @@ export class PropertyBridge {
   private selectionKey = '';
   private tabsKey = '';
   private refreshing = false;
+  private indexedBindings: UiDocument['bindings'] | null = null;
+  private nativeIds = new Map<string, Id>();
+  private lookup(doc: UiDocument) {
+    if (this.indexedBindings !== doc.bindings) {
+      this.indexedBindings = doc.bindings;
+      this.nativeIds = new Map(
+        Object.entries(doc.bindings).flatMap(
+          ([id, b]) =>
+            [[b.containerId, id], ...(b.surfaceId ? [[b.surfaceId, id]] : [])] as [string, Id][],
+        ),
+      );
+    }
+    return this.nativeIds;
+  }
+
   private panels: HostObject[] = [];
   private inspector: InspectorPanels;
   readonly fieldIds = new Set([
@@ -68,12 +83,7 @@ export class PropertyBridge {
   targets(): UiNode[] {
     const app = this.current();
     if (!app) return [];
-    const lookup = new Map(
-      Object.entries(app.state.doc.bindings).flatMap(
-        ([id, b]) =>
-          [[b.containerId, id], ...(b.surfaceId ? [[b.surfaceId, id]] : [])] as [string, string][],
-      ),
-    );
+    const lookup = this.lookup(app.state.doc);
     const raw = [...this.bb.Outliner.selected, ...this.bb.Group.multi_selected];
     if (raw.some((e) => !lookup.has(e.uuid))) return [];
     return topSelection(app.state.doc, [...new Set(raw.map((e) => lookup.get(e.uuid)!))]).map(
@@ -84,10 +94,13 @@ export class PropertyBridge {
     if (this.disposed || !this.current()) return false;
     if (node?.uuid) {
       const app = this.current()!;
-      const id = Object.entries(app.state.doc.bindings).find(
-        ([, b]) => b.containerId === node.uuid,
-      )?.[0];
-      const n = id ? app.state.doc.nodes[id] : undefined;
+      // Undo constructs temporary Groups with a UUID but without hydrated markers.
+      // Resolve those through a document-scoped index as well as live objects.
+      const id = this.lookup(app.state.doc).get(node.uuid);
+      const n =
+        id && app.state.doc.bindings[id]?.containerId === node.uuid
+          ? app.state.doc.nodes[id]
+          : undefined;
       return !!n && (!field.applies || field.applies(n));
     }
     const targets = this.targets();
@@ -146,24 +159,25 @@ export class PropertyBridge {
   }
   hydrate(doc: UiDocument) {
     if (this.disposed) return;
+    const selectionInfo = `已选择 ${this.targets().length} 个对象；显示首个值，修改统一应用`;
+    const objects = new Map<string, HostObject>(
+      [...(this.bb.Project?.elements ?? []), ...(this.bb.Project?.groups ?? [])].map(
+        (e: HostObject) => [e.uuid, e],
+      ),
+    );
     for (const [id, binding] of Object.entries(doc.bindings)) {
-      const object =
-        this.bb.Project?.elements.find((e: HostObject) => e.uuid === binding.containerId) ??
-        this.bb.Project?.groups.find((e: HostObject) => e.uuid === binding.containerId);
+      const object = objects.get(binding.containerId);
       const node = doc.nodes[id];
       if (!object || !node) continue;
       object[SOURCE_MARKER] = id;
       object[ROLE_MARKER] = 'container';
-      const surface = this.bb.Project?.elements.find(
-        (e: HostObject) => e.uuid === binding.surfaceId,
-      );
+      const surface = objects.get(binding.surfaceId ?? '');
       if (surface) {
         surface[SOURCE_MARKER] = id;
         surface[ROLE_MARKER] = 'content';
       }
       for (const f of all) object[FIELD_PREFIX + f.id] = f.read(node) ?? '';
-      object[FIELD_PREFIX + 'selection_info'] =
-        `已选择 ${this.targets().length} 个对象；显示首个值，修改统一应用`;
+      object[FIELD_PREFIX + 'selection_info'] = selectionInfo;
     }
   }
   refresh(autoSelect = true) {
