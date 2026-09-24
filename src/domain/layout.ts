@@ -1,3 +1,6 @@
+import { autoFrames } from './auto-frame';
+import { sizeTerms } from './expression';
+import { resolveTransforms } from './transform';
 import type { Axis, Id, Rect, ResolvedScene, UiDocument, UiNode } from './types';
 import { defaultFrame } from './types';
 
@@ -7,6 +10,7 @@ export type ContentMeasure = (
 ) => { width: number; height: number } | undefined;
 export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): ResolvedScene {
   const scene: ResolvedScene = { nodes: {}, order: [] };
+  const rawSizes = new Map<string, number>();
   const sizes = new Map<string, number>(),
     resolving = new Set<string>();
   const node = (id: Id): UiNode => {
@@ -30,27 +34,55 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
       ? axis === 'width'
         ? nine.insets[1] + nine.insets[3] + 1
         : nine.insets[0] + nine.insets[2] + 1
-      : 1;
+      : 0;
+    const explicitMin = axis === 'width' ? n.layout.minWidth : n.layout.minHeight;
+    if (Number.isFinite(value) && value <= 0 && explicitMin === 0) return 0;
     const min = Math.max(border, axis === 'width' ? n.layout.minWidth : n.layout.minHeight);
     const max = axis === 'width' ? n.layout.maxWidth : n.layout.maxHeight;
     if (!Number.isFinite(value) || (max !== undefined && max < min))
       throw new Error(`${n.name}: 无效尺寸约束`);
     return Math.max(min, Math.min(value, max ?? Infinity));
   }
+  const auto = autoFrames(doc, measure);
   function measure(n: UiNode, axis: Axis): number {
     const key = `${n.id}:${axis}`;
     if (sizes.has(key)) return sizes.get(key)!;
     if (resolving.has(key))
-      throw new Error(`${n.name}: 父子尺寸形成循环依赖，请把其中一方改为固定尺寸`);
+      throw new Error(`${n.name}: 尺寸形成循环依赖（自身、父子或同级），请设置一个确定的尺寸参照`);
     resolving.add(key);
     const rule = n.layout[axis];
+    if (rule.kind === 'auto' && n.kind !== 'frame')
+      throw new Error(`${n.name}: 自动尺寸仅适用于 Frame`);
     let value: number;
-    if (n.suspended) value = n.rect[axis];
+    if (n.suspended || (rule.kind === 'auto' && !auto.active(n))) value = n.rect[axis];
+    else if (rule.kind === 'auto' && auto.free(n)) value = auto.extent(n, axis).size;
+    else if (rule.kind === 'auto' && !flow(n).length) value = n.rect[axis];
     else if (rule.kind === 'fixed') value = rule.value;
-    else if (rule.kind === 'expression') {
-      if (!n.parent) throw new Error(`${n.name}: 根节点没有百分比参照父级`);
-      value = measure(node(n.parent), axis) * rule.percent + rule.pixels;
-    } else if (rule.kind === 'hug') {
+    else if (rule.kind === 'expression' || rule.kind === 'sum' || rule.kind === 'default') {
+      const terms =
+        rule.kind === 'default' ? [{ unit: '%' as const, percent: 1 }] : sizeTerms(rule);
+      value = rule.kind === 'default' ? 0 : rule.pixels;
+      for (const term of terms) {
+        if (!term.percent) continue;
+        let basis: number;
+        if (term.unit === '%') {
+          if (!n.parent) throw new Error(`${n.name}: 此尺寸需要父级参照，请把画板设为像素尺寸`);
+          basis = measure(node(n.parent), axis);
+        } else if (term.unit === '%x' || term.unit === '%y')
+          basis = measure(n, term.unit === '%x' ? 'width' : 'height');
+        else if (term.unit === '%c' || term.unit === '%cm') {
+          const children = n.children.map(node).filter((c) => term.unit === '%c' || c.visible);
+          const values = children.map((c) => measure(c, axis));
+          basis = term.unit === '%c' ? values.reduce((a, b) => a + b, 0) : Math.max(0, ...values);
+        } else {
+          const peers = (n.parent ? node(n.parent).children : doc.roots).filter(
+            (id) => id !== n.id,
+          );
+          basis = Math.max(0, ...peers.map((id) => measure(node(id), axis)));
+        }
+        value += basis * term.percent;
+      }
+    } else if (rule.kind === 'hug' || rule.kind === 'auto') {
       if (n.kind === 'image') {
         const generated = n.content?.kind === 'generated' ? n.content : undefined;
         const measured =
@@ -96,7 +128,7 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
               ));
       }
     } else {
-      if (!n.parent) value = n.rect[axis];
+      if (!n.parent) throw new Error(`${n.name}: fill 需要父级剩余空间`);
       else {
         const parent = node(n.parent),
           f = parent.frame ?? defaultFrame();
@@ -140,6 +172,7 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
         }
       }
     }
+    rawSizes.set(key, value);
     value = limits(n, axis, value);
     sizes.set(key, value);
     resolving.delete(key);
@@ -147,20 +180,75 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
   }
   const visiting = new Set<Id>(),
     visited = new Set<Id>();
-  function place(n: UiNode, rect: Rect, parentVisible: boolean, parentLocked: boolean) {
+  function place(
+    n: UiNode,
+    rect: Rect,
+    parentVisible: boolean,
+    parentLocked: boolean,
+    parentPrecise = false,
+  ) {
     if (visiting.has(n.id) || visited.has(n.id)) throw new Error('图层层级存在循环或重复引用');
     visiting.add(n.id);
-    // Round shared edges rather than independent widths. Adjacent Fill items cannot acquire gaps.
-    const x = Math.round(rect.x),
-      y = Math.round(rect.y);
+    const shift = auto.originShift(n),
+      min = auto.minimum(n);
+    rect = { ...rect, x: rect.x + shift.x, y: rect.y + shift.y };
+    // Preserve explicit fractional offsets/rotation; otherwise round shared edges for adjacent Fill items.
+    const precise =
+      auto.active(n) ||
+      n.layout.subpixel === true ||
+      parentPrecise ||
+      !!n.rotation ||
+      !Number.isInteger(n.layout.offset.x) ||
+      !Number.isInteger(n.layout.offset.y);
+    const parent = n.parent ? doc.nodes[n.parent] : undefined;
+    const flowChild =
+      parent?.frame?.engineType === 'stack_panel' && n.layout.positioning === 'flow' && n.visible;
+    const origin = n.parent ? scene.nodes[n.parent]!.rect : { x: 0, y: 0 };
+    // Flow edges share the parent's fractional origin, preserving Fill adjacency after a half-pixel move.
+    const x = flowChild
+        ? origin.x + Math.round(rect.x - origin.x)
+        : precise
+          ? rect.x
+          : Math.round(rect.x),
+      y = flowChild
+        ? origin.y + Math.round(rect.y - origin.y)
+        : precise
+          ? rect.y
+          : Math.round(rect.y);
     const actual = {
       x,
       y,
-      width: Math.max(1, Math.round(rect.x + rect.width) - x),
-      height: Math.max(1, Math.round(rect.y + rect.height) - y),
+      width: Math.max(
+        0,
+        n.layout.width.kind === 'auto'
+          ? rect.width
+          : flowChild
+            ? Math.round(rect.x - origin.x + rect.width) - Math.round(rect.x - origin.x)
+            : precise
+              ? n.kind === 'frame'
+                ? rect.width
+                : Math.round(rect.width)
+              : Math.round(rect.x + rect.width) - x,
+      ),
+      height: Math.max(
+        0,
+        n.layout.height.kind === 'auto'
+          ? rect.height
+          : flowChild
+            ? Math.round(rect.y - origin.y + rect.height) - Math.round(rect.y - origin.y)
+            : precise
+              ? n.kind === 'frame'
+                ? rect.height
+                : Math.round(rect.height)
+              : Math.round(rect.y + rect.height) - y,
+      ),
     };
     scene.nodes[n.id] = {
       id: n.id,
+      requested: {
+        width: rawSizes.get(`${n.id}:width`) ?? rect.width,
+        height: rawSizes.get(`${n.id}:height`) ?? rect.height,
+      },
       rect: actual,
       visible: parentVisible && n.visible,
       locked: parentLocked || n.locked,
@@ -191,14 +279,18 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
         cy = c.rect.y;
       } else if (f.direction === 'free' || c.layout.positioning === 'absolute' || !c.visible) {
         cx =
-          rect.x +
-          rect.width * (c.layout.anchorFrom[0] + (c.layout.offsetPercent?.x ?? 0)) -
-          width * c.layout.anchorTo[0] +
+          rect.x -
+          min.x +
+          (auto.free(n) ? auto.reference(n, 'width') : rect.width) *
+            (c.layout.anchorFrom[0] + (c.layout.offsetPercent?.x ?? 0)) -
+          (auto.free(c) ? auto.reference(c, 'width') : width) * c.layout.anchorTo[0] +
           c.layout.offset.x;
         cy =
-          rect.y +
-          rect.height * (c.layout.anchorFrom[1] + (c.layout.offsetPercent?.y ?? 0)) -
-          height * c.layout.anchorTo[1] +
+          rect.y -
+          min.y +
+          (auto.free(n) ? auto.reference(n, 'height') : rect.height) *
+            (c.layout.anchorFrom[1] + (c.layout.offsetPercent?.y ?? 0)) -
+          (auto.free(c) ? auto.reference(c, 'height') : height) * c.layout.anchorTo[1] +
           c.layout.offset.y;
       } else {
         const crossAvailable = horizontal
@@ -217,6 +309,7 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
         { x: cx, y: cy, width, height },
         scene.nodes[n.id]!.visible,
         scene.nodes[n.id]!.locked,
+        precise,
       );
     }
     visiting.delete(n.id);
@@ -238,5 +331,7 @@ export function layout(doc: UiDocument, contentMeasure?: ContentMeasure): Resolv
       false,
     );
   }
+  auto.offsets(scene);
+  resolveTransforms(doc, scene);
   return scene;
 }

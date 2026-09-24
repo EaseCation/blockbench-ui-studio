@@ -1,3 +1,4 @@
+import type { Transform } from './transform';
 export type Id = string;
 export interface Point {
   x: number;
@@ -8,13 +9,22 @@ export interface Rect extends Point {
   height: number;
 }
 export type Axis = 'width' | 'height';
+export type SizeUnit = '%' | '%c' | '%cm' | '%sm' | '%x' | '%y';
+export interface SizeTerm {
+  unit: SizeUnit;
+  percent: number;
+}
 export type SizeRule =
   | { kind: 'fixed'; value: number }
-  | { kind: 'expression'; percent: number; pixels: number }
+  | { kind: 'expression'; percent: number; pixels: number; unit?: SizeUnit }
+  | { kind: 'sum'; terms: SizeTerm[]; pixels: number }
+  | { kind: 'default' }
   | { kind: 'fill' }
-  | { kind: 'hug' };
+  | { kind: 'hug' }
+  | { kind: 'auto' };
 export type Anchor = [number, number];
 export interface LayoutSpec {
+  subpixel?: boolean;
   width: SizeRule;
   height: SizeRule;
   positioning: 'flow' | 'absolute';
@@ -93,6 +103,7 @@ export interface UiNode {
   visible: boolean;
   locked: boolean;
   opacity: number;
+  rotation?: number;
   layout: LayoutSpec;
   frame?: FrameSpec;
   content?: RenderRecipe;
@@ -133,6 +144,10 @@ export interface Pixels {
   data: Uint8ClampedArray;
 }
 export interface ResolvedNode {
+  requested?: { width: number; height: number };
+  transform?: Transform;
+  corners?: Point[];
+  bounds?: Rect;
   id: Id;
   rect: Rect;
   visible: boolean;
@@ -140,6 +155,8 @@ export interface ResolvedNode {
   depth: number;
 }
 export interface ResolvedScene {
+  /** Derived origin rebasing. Apply together with resolved rects in the owning transaction. */
+  offsets?: Record<Id, Point>;
   nodes: Record<Id, ResolvedNode>;
   order: Id[];
 }
@@ -153,8 +170,8 @@ export function defaultLayout(rect: Rect): LayoutSpec {
     anchorFrom: [0, 0],
     anchorTo: [0, 0],
     offset: { x: rect.x, y: rect.y },
-    minWidth: 1,
-    minHeight: 1,
+    minWidth: 0,
+    minHeight: 0,
   };
 }
 export function defaultFrame(): FrameSpec {

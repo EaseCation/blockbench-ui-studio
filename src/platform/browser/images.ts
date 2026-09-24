@@ -33,19 +33,22 @@ export const imagePort: ImagePort = {
     return canvas.toDataURL('image/png');
   },
 };
-export async function blobImage(
-  blob: Blob,
-): Promise<{ png: string; width: number; height: number; name: string }> {
+export async function blobPixels(blob: Blob) {
   const url = URL.createObjectURL(blob);
   try {
     const pixels = await imagePort.decode(url);
     return {
-      png: imagePort.encode(pixels),
-      width: pixels.width,
-      height: pixels.height,
+      pixels,
       name: blob instanceof File ? blob.name : '粘贴的图片',
     };
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+export async function blobImage(
+  blob: Blob,
+): Promise<{ png: string; width: number; height: number; name: string }> {
+  const { pixels, name } = await blobPixels(blob);
+  return { png: imagePort.encode(pixels), width: pixels.width, height: pixels.height, name };
 }

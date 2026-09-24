@@ -57,6 +57,8 @@ test('A/R 拖绘 Frame 与 Image：精确尺寸、内部创建、无中间模型
     return { ...app.state.doc.nodes[app.state.selection[0]], undo: window.Undo.history.length };
   });
   expect(frame.kind).toBe('frame');
+  expect(frame.layout.width).toEqual({ kind: 'fixed', value: 80 });
+  expect(frame.layout.height).toEqual({ kind: 'fixed', value: 55 });
   expect(frame.rect).toEqual({ x: 20, y: 25, width: 80, height: 55 });
   expect(frame.undo).toBe(before.undo + 1);
   expect(await selectedTool(page)).toBe('mcui_select');

@@ -49,6 +49,7 @@
   flex: 1;
   min-width: 0;
 }
+#panel_element [form_type='mcui_scalar'] .mcui-inspector-input,
 .mcui-inspector .mcui-inspector-input,
 .mcui-inspector .mcui-inspector-select {
   min-width: 0;
@@ -61,6 +62,7 @@
   border: 1px solid var(--color-border);
   padding: 3px 5px;
 }
+#panel_element [form_type='mcui_scalar'] .mcui-inspector-input[aria-invalid='true'],
 .mcui-inspector .mcui-inspector-input[aria-invalid='true'] {
   outline: 1px solid var(--color-error, #ef6870);
 }
@@ -178,4 +180,87 @@
 .mcui-inspector .mcui-inspector-select {
   appearance: auto;
   background-image: none;
+}
+.mcui-size-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mcui-size-heading .mcui-inspector-segments {
+  flex: none;
+}
+.mcui-size-heading button[aria-pressed='true'] {
+  background: var(--color-accent);
+  color: var(--color-accent_text);
+}
+.mcui-size-builder[hidden],
+.mcui-inspector-pair[hidden] {
+  display: none;
+}
+.mcui-size-axis {
+  min-width: 0;
+}
+.mcui-size-caption {
+  font-size: 12px;
+  margin: 0 0 4px;
+  color: var(--color-subtle_text);
+}
+.mcui-size-axis > select {
+  width: 100%;
+  margin-bottom: 5px;
+}
+.mcui-size-terms {
+  display: grid;
+  gap: 5px;
+}
+.mcui-size-term {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.mcui-size-term > input {
+  flex: 1;
+  width: 0;
+  min-width: 35px;
+}
+.mcui-size-term > select {
+  width: 100%;
+}
+#panel_element input[aria-invalid='true'] {
+  border-color: #f06a6a;
+  box-shadow: 0 0 0 1px #f06a6a;
+}
+.mcui-size-heading .mcui-inspector-segments > button {
+  white-space: nowrap;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  min-width: 52px;
+}
+
+.mcui-inspector-color.mcui-color-mixed .sp-preview-inner {
+  background: repeating-linear-gradient(135deg, #888 0 3px, #bbb 3px 6px) !important;
+}
+.mcui-inspector-color[aria-disabled='true'] {
+  opacity: 0.45;
+}
+
+#panel_element [form_type='mcui_scalar'] .mcui-inspector-input {
+  width: 0;
+  flex: 1;
+}
+
+.mcui-inspector [data-auto-size] {
+  flex: none;
+  padding: 0 4px;
+  font-size: 11px;
+}
+.mcui-inspector [data-auto-size][aria-pressed='true'] {
+  color: var(--color-accent);
+  background: var(--color-back);
+}
+.mcui-inspector [data-auto-size][hidden] {
+  display: none;
 }

@@ -56,7 +56,11 @@ export function setDirection(doc: UiDocument, node: UiNode, direction: FrameSpec
   frame.direction = direction;
   frame.engineType = direction === 'free' ? 'panel' : 'stack_panel';
 }
-export function setSizeMode(node: UiNode, axis: Axis, mode: SizeRule['kind']) {
+export function setSizeMode(
+  node: UiNode,
+  axis: Axis,
+  mode: 'fixed' | 'expression' | 'fill' | 'hug' | 'auto',
+) {
   if (node.layout[axis].kind === mode) return;
   if (mode === 'fixed') node.layout[axis] = fixed(node.rect[axis]);
   else if (mode === 'expression') node.layout[axis] = { kind: 'expression', percent: 1, pixels: 0 };
@@ -67,7 +71,7 @@ export function sizeModeError(
   doc: UiDocument,
   ids: Id[],
   axis: Axis,
-  mode: SizeRule['kind'],
+  mode: 'fixed' | 'expression' | 'fill' | 'hug' | 'auto',
 ): string | null {
   const candidate = { ...doc, nodes: { ...doc.nodes } };
   try {

@@ -409,3 +409,66 @@ test('v0.5 嵌套 Image 原生复制/删除/撤销、载体保护与绘画返回
   expect(protectedResult.paused).toContain('UV');
   expect(protectedResult.uv).toBe(8);
 });
+
+test('根 Frame 名称只呈现显式选区，拖动标签跟手且取消恢复，退出还原原生高亮', async ({ page }) => {
+  await start(page);
+  const ids = await scene(page);
+  const label = page.locator(`[data-mcui-label="${ids.root}"]`);
+  await label.click();
+  const snapshot = () =>
+    page.evaluate(() => {
+      const a = window.Blockbench.mcuiStudio.getStudio();
+      return {
+        selection: a.state.selection,
+        doc: JSON.stringify(a.state.doc),
+        undo: window.Undo.history.length,
+        outlines: window.Cube.all.filter((c: any) => c.mesh.outline.visible).length,
+      };
+    });
+  const before = await snapshot();
+  expect(before.selection).toEqual([ids.root]);
+  expect(before.outlines).toBe(0);
+  await expect(page.locator('#cubes_list .outliner_object.selected')).toHaveCount(1);
+  const box = (await label.boundingBox())!;
+  const border = (await page.locator('[data-mcui-selection]').boundingBox())!;
+  await page.mouse.move(box.x + 8, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 68, box.y + box.height / 2 + 35, { steps: 5 });
+  const moving = (await label.boundingBox())!;
+  const movedBorder = (await page.locator('[data-mcui-selection]').boundingBox())!;
+  expect(moving.x - box.x).toBeGreaterThan(55);
+  expect(moving.y - box.y).toBeGreaterThan(30);
+  // Geometry snaps to UI pixels. The label must track the actual preview, not unsnapped input.
+  expect(moving.x - box.x).toBeCloseTo(movedBorder.x - border.x, 1);
+  expect(moving.y - box.y).toBeCloseTo(movedBorder.y - border.y, 1);
+  expect((await snapshot()).doc).toBe(before.doc);
+  expect((await snapshot()).undo).toBe(before.undo);
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  expect((await label.boundingBox())!.x).toBeCloseTo(box.x, 1);
+  expect((await snapshot()).doc).toBe(before.doc);
+  await page.mouse.move(box.x + 8, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 52, box.y + box.height / 2 + 22, { steps: 4 });
+  const draft = (await label.boundingBox())!;
+  await page.mouse.up();
+  expect((await label.boundingBox())!.x).toBeCloseTo(draft.x, 1);
+  expect((await snapshot()).undo).toBe(before.undo + 1);
+  await page.evaluate(() => window.Undo.undo());
+  await expect.poll(async () => (await label.boundingBox())!.x).toBeCloseTo(box.x, 1);
+  expect((await snapshot()).doc).toBe(before.doc);
+  await page.evaluate(() => window.Blockbench.mcuiStudio.getViewport().setInteraction('native'));
+  await expect.poll(async () => (await snapshot()).outlines).toBe(2);
+  await page.evaluate(() => window.Blockbench.mcuiStudio.getViewport().setInteraction('figma'));
+  await expect.poll(async () => (await snapshot()).outlines).toBe(0);
+  await page.keyboard.press('Enter');
+  expect((await snapshot()).selection).toEqual([ids.a, ids.b]);
+  await expect(page.locator('[data-mcui-selected-layer]')).toHaveCount(2);
+  await expect(page.locator('#cubes_list .outliner_object.selected')).toHaveCount(2);
+  await page.keyboard.press('Shift+Enter');
+  await page.screenshot({ path: '.cache/mcui-frame-selection.png' });
+  await page.evaluate(() => window.Plugins.registered.mcui_studio.onunload());
+  expect(
+    await page.evaluate(() => window.Cube.all.filter((c: any) => c.mesh.outline.visible).length),
+  ).toBe(2);
+});

@@ -1,3 +1,4 @@
+import { validSizeRule } from './expression';
 import type { Id, UiDocument, UiNode } from './types';
 export const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 export function descendants(doc: UiDocument, id: Id): Id[] {
@@ -70,11 +71,17 @@ export function validateDocument(value: unknown): UiDocument {
     )
       throw new Error('Frame 布局类型无效');
     if (n.kind === 'image' && (n.frame || !n.content)) throw new Error('Image 内容结构无效');
+    if (!validSizeRule(n.layout.width) || !validSizeRule(n.layout.height))
+      throw new Error(`${n.name}: 尺寸规则无效`);
+    if (n.kind !== 'frame' && (n.layout.width.kind === 'auto' || n.layout.height.kind === 'auto'))
+      throw new Error(`${n.name}: 自动尺寸仅适用于 Frame`);
     const binding = d.bindings[id];
     if (binding && !binding.containerId) throw new Error('原生角色绑定不符合当前结构');
     seen.add(id);
-    if (!Object.values(n.rect).every(Number.isFinite) || n.rect.width <= 0 || n.rect.height <= 0)
+    if (!Object.values(n.rect).every(Number.isFinite) || n.rect.width < 0 || n.rect.height < 0)
       throw new Error('图层尺寸无效');
+    if (n.rotation !== undefined && !Number.isFinite(n.rotation))
+      throw new Error('图层旋转角度无效');
     if (n.content && !d.assets[n.content.source]) throw new Error(`${n.name}: 缺少源图`);
     for (const c of n.children) visit(c, id);
   };

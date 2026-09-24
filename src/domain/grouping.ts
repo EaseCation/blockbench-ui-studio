@@ -1,3 +1,12 @@
+import {
+  documentTransforms,
+  worldPose,
+  poseInParent,
+  inversePoint,
+  identity,
+  corners,
+  pointBounds,
+} from './transform';
 import { descendants, siblings, topSelection } from './document';
 import { bounds } from './geometry';
 import { retainWorldRect } from './tree-editing';
@@ -63,9 +72,26 @@ export function groupNodes(doc: UiDocument, selection: Id[], id: Id): Id {
     )
       throw new Error('自动布局中请编组连续的流式子项，或先切换为自由布局');
   }
-  const rect = bounds(nodes.map((n) => n.rect))!;
+  const transforms = documentTransforms(doc),
+    poses = new Map(nodes.map((n) => [n.id, worldPose(doc, n.id, transforms)]));
+  const parentTransform = parent ? transforms.get(parent)! : identity();
+  const rawRect = bounds(
+    nodes.map((n) =>
+      pointBounds(
+        corners(n.rect, transforms.get(n.id)).map((p) => inversePoint(p, parentTransform)),
+      ),
+    ),
+  )!;
+  const rect = {
+    x: Math.floor(rawRect.x),
+    y: Math.floor(rawRect.y),
+    width: Math.ceil(rawRect.x + rawRect.width) - Math.floor(rawRect.x),
+    height: Math.ceil(rawRect.y + rawRect.height) - Math.floor(rawRect.y),
+  };
   const frame = createNode(id, 'Frame', 'frame', rect);
   frame.parent = parent;
+  frame.layout.width = { kind: 'auto' };
+  frame.layout.height = { kind: 'auto' };
   frame.layout.positioning = stack ? nodes[0]!.layout.positioning : 'flow';
   const firstBranch = (key: Id) => {
     while (doc.nodes[key]!.parent !== parent) key = doc.nodes[key]!.parent!;
@@ -80,7 +106,12 @@ export function groupNodes(doc: UiDocument, selection: Id[], id: Id): Id {
     old.splice(old.indexOf(n.id), 1);
     n.parent = id;
     frame.children.push(n.id);
-    retainWorldRect(doc, n, n.rect);
+  }
+  for (const n of nodes) {
+    const pose = poses.get(n.id)!,
+      local = poseInParent(doc, parent, pose.rect, pose.rotation, transforms);
+    if (n.rotation !== undefined || local.rotation) n.rotation = local.rotation;
+    retainWorldRect(doc, n, local.rect);
   }
   return id;
 }
@@ -98,6 +129,8 @@ export function ungroupNodes(doc: UiDocument, selection: Id[], recursive = false
     )
       throw new Error('请先将父级自动布局切换为自由布局，再解除编组');
   }
+  const transforms = documentTransforms(doc);
+  const poses = new Map(Object.keys(doc.nodes).map((id) => [id, worldPose(doc, id, transforms)]));
   const effective = new Map<Id, { visible: boolean; locked: boolean }>();
   for (const root of ids)
     for (const id of descendants(doc, root)) {
@@ -133,11 +166,15 @@ export function ungroupNodes(doc: UiDocument, selection: Id[], recursive = false
       at = list.indexOf(id);
     const promoted = flatten(id);
     list.splice(at, 1, ...promoted);
+    for (const key of promoted) doc.nodes[key]!.parent = parent;
     for (const key of promoted) {
       const child = doc.nodes[key]!;
       child.parent = parent;
       Object.assign(child, effective.get(key));
-      retainWorldRect(doc, child, child.rect);
+      const pose = poses.get(key)!,
+        local = poseInParent(doc, parent, pose.rect, pose.rotation, transforms);
+      if (child.rotation !== undefined || local.rotation) child.rotation = local.rotation;
+      retainWorldRect(doc, child, local.rect);
     }
     next.push(...promoted);
   }

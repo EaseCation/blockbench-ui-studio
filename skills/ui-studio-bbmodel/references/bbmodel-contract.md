@@ -1,6 +1,6 @@
 # 保存契约与排错
 
-对应 UI Studio 0.8.1 的 schemaVersion 1、Blockbench 5.2.1。版本号相同不意味着任意历史开发结构都兼容；按当前 Image/Frame 结构校验，不做旧字段迁移。
+对应 UI Studio 0.9.0 的 schemaVersion 1、Blockbench 5.2.1。版本号相同不意味着任意历史开发结构都兼容；按当前 Image/Frame 结构校验，不做旧字段迁移。
 
 ## 两层数据都要一致
 
@@ -15,6 +15,8 @@
 ## 几何、UV 与顺序
 
 UI X 映射世界 X，UI Y 映射世界 Z。Cube.from.y 与 to.y 相等，为 0 厚度；Y 数值是树遍历得到的绘制深度。父 Image 先于后代，同级后面的元素显示在上面。Frame 在遍历中也占位置，因此不能只按 Cube 序号自行赋层级。
+
+Group 的 rotation.y 表达 UI 局部旋转（正数逆时针）；Group 与内容 Cube 的 origin 自动位于该节点布局矩形中心。父子 Group 共同表达继承变换，不旋转贴图像素。
 
 内容 Cube 只有 up 面引用成品贴图，其它面 texture=null；非 Box UV，autouv=0，旋转为零。up.uv 是 `[0,0,texture.uv_width,texture.uv_height]`。高清素材的纹理尺寸与几何 W/H 可以不同。
 

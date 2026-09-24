@@ -67,3 +67,34 @@ describe('逻辑命中与放入目标', () => {
     expect(a.layout.offset.x).toBe(20);
   });
 });
+
+it('已选容器优先承接内部起拖，未选内部仍框选，标签及禁用状态保留优先级', () => {
+  const frame = node('f', 'frame', 0, 0),
+    child = node('child', 'image', 20, 3, 1);
+  const p = { x: 50, y: 50 };
+  expect(pickNode([frame, child], p, ['f'])).toBe('f');
+  expect(pickNode([frame], p, ['f'])).toBe('f');
+  expect(pickNode([frame], p)).toBeNull();
+  expect(pickNode([frame, child], p)).toBe('child');
+  expect(pickNode([frame, child], p, ['child'])).toBe('child');
+  frame.disabled = true;
+  expect(pickNode([frame, child], p, ['f'])).toBe('child');
+  frame.disabled = false;
+  const label = node('label', 'frame', 200, 4);
+  label.label = { x: 40, y: 40, width: 50, height: 20 };
+  expect(pickNode([frame, child, label], p, ['f'])).toBe('label');
+});
+it('多选间隙和旋转 Frame 外接矩形不成为选区拖动区域', () => {
+  const a = node('a', 'frame', 0, 0),
+    b = node('b', 'frame', 200, 1);
+  expect(pickNode([a, b], { x: 150, y: 50 }, ['a', 'b'])).toBeNull();
+  a.polygon = [
+    { x: 50, y: 0 },
+    { x: 100, y: 50 },
+    { x: 50, y: 100 },
+    { x: 0, y: 50 },
+  ];
+  const child = node('child', 'image', 0, 2, 1);
+  expect(pickNode([a, child], { x: 50, y: 50 }, ['a'])).toBe('a');
+  expect(pickNode([a, child], { x: 15, y: 15 }, ['a'])).toBe('child');
+});

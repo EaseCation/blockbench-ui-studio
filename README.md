@@ -4,12 +4,14 @@
 
 设计保存为标准 `.bbmodel`：图层由原生 Group、零厚度 Cube 和内嵌贴图组成，**未安装插件也能查看最后保存的设计**。重新计算布局、九宫格和文字需要相应插件。
 
+普通新增和编组的 Frame 默认自动跟随子元素边界；初始画板与拖拽绘制保持固定尺寸，W/H 可逐轴切换。
+
 ## 主要能力
 
 - **Image / Frame**：Image 可绘制并包含子元素；Frame 负责自由布局或横向、纵向自动布局，支持间距、内边距和对齐。
-- **布局表达式**：位置与尺寸支持百分比＋像素偏移，例如 `100% - 16px`，以及 Fill、Hug 和锚点。
+- **布局表达式**：尺寸支持基岩风格 `%`、`%c`、`%cm`、`%sm`、`%x`、`%y` 及像素加减，提供组合/表达式编辑和错误红框；位置继续支持百分比＋像素偏移与锚点。
 - **像素与素材**：原生绘画、图片适配、九宫格烘焙、纯色/渐变填充、描边，以及独立于显示尺寸的贴图分辨率。
-- **编辑交互**：拖绘 Frame / Image（A / R）、八点缩放、父层优先框选与Command/Ctrl深层框选、测距、拖入容器、自动布局快捷键（Shift+A）和原生撤销；支持将选区编组为 Frame、单层解除和递归解除编组。
+- **编辑交互**：拖绘 Frame / Image（A / R）、八点缩放、绕中心旋转（Shift 吸附 15°）、Enter/Shift+Enter 层级导航、父层优先框选与Command/Ctrl深层框选、测距、紫色中心/边缘吸附线、拖入容器、自动布局快捷键（Shift+A）和原生撤销；支持将选区编组为 Frame、单层解除和递归解除编组。
 - **可编辑文字**：配合 [BBModel Text Component](https://github.com/EaseCation/blockbench-bbmodel-text)，支持嵌入字体、文字排版和重新烘焙；成品仍是标准 Cube 与 PNG。
 - **AI 文件创作**：内置 Skill 和脚本，可直接生成、编辑、转换及校验 `.bbmodel`，并输出预览图。
 
@@ -97,3 +99,5 @@ npm run ui:file -- validate work/edited.bbmodel
 ## License
 
 [MIT](LICENSE)。Blockbench 和可选文字插件为独立项目，分别遵循各自许可证。
+
+第三方素材及许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -1,15 +1,14 @@
+import { StudioClipboard } from './clipboard';
 import { installGrouping } from './grouping';
 import { contentMetadata } from './content-carrier';
 import { contentApi } from './content-api';
-import { contentProviders } from '../../application/content';
 import { Studio } from '../../application/studio';
 import { OutlinerToolbar } from './outliner-toolbar';
 import { WorkspaceLayout } from './workspace-layout';
 import { installShortcuts } from './shortcuts';
-import { clone, descendants, topSelection } from '../../domain/document';
+import { clone } from '../../domain/document';
 import { createNode, fixed } from '../../domain/types';
-import type { UiDocument } from '../../domain/types';
-import { imagePort, blobImage } from '../../platform/browser/images';
+import { imagePort } from '../../platform/browser/images';
 import { OutlinerView } from './outliner-view';
 import { PropertyBridge } from './properties';
 import { showContentPreview } from './preview-dialog';
@@ -32,8 +31,6 @@ export function install(bb: HostRuntime) {
   let viewport: ViewportController | null = null,
     current: Studio | null = null,
     token = 0;
-  let internalClipboard: UiDocument | null = null,
-    lastPaste = 0;
   let sourceEdit: {
     projectId: string;
     apply: () => Promise<void>;
@@ -57,7 +54,10 @@ export function install(bb: HostRuntime) {
   life.add(() => properties.dispose());
   const workspaceLayout = new WorkspaceLayout(bb, () => (get()?.app === current ? current : null));
   life.add(() => workspaceLayout.dispose());
-  let interactionSelect: HostObject, viewSelect: HostObject, autoPlaceSelect: HostObject;
+  let interactionSelect: HostObject,
+    viewSelect: HostObject,
+    autoPlaceSelect: HostObject,
+    snapToggle: HostObject;
   const preferences = () => {
     try {
       return JSON.parse(localStorage.getItem('mcui_preferences') ?? '{}');
@@ -113,6 +113,8 @@ export function install(bb: HostRuntime) {
       const saved = preferences();
       viewport.automaticPlacement = saved.autoPlace !== false;
       autoPlaceSelect?.set(viewport.automaticPlacement ? 'on' : 'off');
+      viewport.smartSnapping = saved.smartSnap !== false;
+      snapToggle?.set(viewport.smartSnapping);
       viewport.setInteraction(saved.interaction === 'native' ? 'native' : 'figma');
       viewport.setView(current.state.view);
       interactionSelect?.set(current.state.interaction);
@@ -181,103 +183,12 @@ export function install(bb: HostRuntime) {
       },
     }),
   );
-  function copy() {
-    if (!current) return;
-    const doc = clone(current.state.doc),
-      roots = topSelection(doc, current.state.selection),
-      keep = new Set(roots.flatMap((id) => descendants(doc, id)));
-    doc.roots = roots;
-    for (const id of Object.keys(doc.nodes)) if (!keep.has(id)) delete doc.nodes[id];
-    for (const id of roots) doc.nodes[id]!.parent = null;
-    doc.bindings = {};
-    doc.contentResources = Object.fromEntries(
-      [...contentProviders].map(([id, p]) => [id, p.resources?.()]),
-    );
-    internalClipboard = doc;
-    navigator.clipboard?.writeText(`MCUI:${JSON.stringify(doc)}`).catch(() => {});
-  }
-  function pasteNodes(source: UiDocument, app: Studio) {
-    const newIds = new Map(Object.keys(source.nodes).map((id) => [id, imagePort.id()]));
-    const selected =
-      app.state.selection.length === 1 ? app.state.doc.nodes[app.state.selection[0]!] : undefined;
-    const parent = selected?.id ?? null;
-    // Decode before an atomic command so textures are never published partially.
-    const addedAssets = Object.values(source.assets);
-    return Promise.all(addedAssets.map((a) => imagePort.decode(a.png))).then(async () => {
-      // Sources are imported through the application's cache, not through host globals.
-      await app.importDocument(source, newIds, parent);
-    });
-  }
-  async function paste(forceNew = false, event?: ClipboardEvent) {
-    const app = current;
-    if (!app) return;
-    const now = Date.now();
-    if (now - lastPaste < 200) return;
-    lastPaste = now;
-    const destination = app.state.selection.length === 1 ? app.state.selection[0]! : null;
-    try {
-      if (event?.clipboardData) {
-        const files = [...event.clipboardData.files].filter((f) => f.type.startsWith('image/'));
-        if (files.length) {
-          for (let i = 0; i < files.length; i++)
-            await app.paste(
-              await blobImage(files[i]!),
-              forceNew || files.length > 1,
-              files.length > 1 ? destination : undefined,
-            );
-          return;
-        }
-        const text = event.clipboardData.getData('text/plain');
-        if (text.startsWith('MCUI:')) {
-          await pasteNodes(JSON.parse(text.slice(5)), app);
-          return;
-        }
-      }
-      const items = await navigator.clipboard.read();
-      let text = '';
-      const images: Blob[] = [];
-      for (const item of items) {
-        const type = item.types.find((t) => t.startsWith('image/'));
-        if (type) images.push(await item.getType(type));
-        else if (item.types.includes('text/plain'))
-          text = await (await item.getType('text/plain')).text();
-      }
-      if (images.length) {
-        for (const image of images)
-          await app.paste(
-            await blobImage(image),
-            forceNew || images.length > 1,
-            images.length > 1 ? destination : undefined,
-          );
-      } else if (text.startsWith('MCUI:')) await pasteNodes(JSON.parse(text.slice(5)), app);
-      else app.report('剪贴板不包含图片或 UI 图层，可使用“导入图片”。');
-    } catch (e) {
-      app.report(`无法读取剪贴板，请导入图片，或使用“粘贴内部 UI 图层”：${String(e)}`);
-    }
-  }
-  function importImages() {
-    const app = current;
-    if (!app) return;
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/png,image/jpeg,image/webp';
-    input.multiple = true;
-    input.onchange = async () => {
-      try {
-        const files = [...(input.files ?? [])];
-        const destination = app.state.selection.length === 1 ? app.state.selection[0]! : null;
-        for (const file of files)
-          await app.paste(
-            await blobImage(file),
-            files.length > 1,
-            files.length > 1 ? destination : undefined,
-          );
-      } catch (e) {
-        app.report(e);
-      }
-    };
-    input.click();
-  }
+  const clipboard = new StudioClipboard(
+    bb,
+    () => current,
+    () => !focused() && !viewport?.hasInputGesture(),
+  );
+  life.add(() => clipboard.dispose());
   const command = (
     id: string,
     name: string,
@@ -322,7 +233,7 @@ export function install(bb: HostRuntime) {
       outlinerView.update(current?.state.doc ?? null);
     }),
     command('mcui_paste_child', '粘贴图片为子图层', 'content_paste', () => {
-      void paste(true);
+      void clipboard.paste(true);
     }),
     command(
       'mcui_edit_source',
@@ -384,22 +295,8 @@ export function install(bb: HostRuntime) {
       () => !!current && properties.targets().length === 1 && !!properties.targets()[0]?.suspended,
     ),
     command('mcui_paste_new', 'UI：粘贴为新图层', 'content_paste', () => {
-      void paste(true);
+      void clipboard.paste(true);
     }),
-    command(
-      'mcui_layer_up',
-      'UI：上移一层',
-      'arrow_upward',
-      () => withLayer((app, id) => app.reorder(id, 1)),
-      () => !!current && properties.targets().length === 1,
-    ),
-    command(
-      'mcui_layer_down',
-      'UI：下移一层',
-      'arrow_downward',
-      () => withLayer((app, id) => app.reorder(id, -1)),
-      () => !!current && properties.targets().length === 1,
-    ),
     command(
       'mcui_source_apply',
       '应用源图到 UI',
@@ -445,14 +342,14 @@ export function install(bb: HostRuntime) {
       name: 'UI：导入图片',
       icon: 'image',
       condition: () => !!current,
-      click: importImages,
+      click: () => clipboard.importImages(),
     }),
     new bb.Action('mcui_paste_cached', {
       name: '粘贴内部 UI 图层',
       icon: 'content_paste',
-      condition: () => !!current && !!internalClipboard,
+      condition: () => !!current && clipboard.hasNodes(),
       click: () => {
-        if (current && internalClipboard) void pasteNodes(internalClipboard, current);
+        void clipboard.pasteCachedNodes();
       },
     }),
     new bb.Action('mcui_toggle_paint_resize', {
@@ -511,7 +408,18 @@ export function install(bb: HostRuntime) {
       savePreferences({ autoPlace: item.value === 'on' });
     },
   });
-  for (const widget of [interactionSelect, viewSelect, autoPlaceSelect]) {
+  snapToggle = new bb.Toggle('mcui_smart_snap', {
+    name: '智能吸附',
+    description: '中心和边缘对齐；拖动中按 Ctrl 临时关闭',
+    icon: 'fa-magnet',
+    default: preferences().smartSnap !== false,
+    condition: () => !!current,
+    onChange: (value: boolean) => {
+      viewport?.setSmartSnapping(value);
+      savePreferences({ smartSnap: value });
+    },
+  });
+  for (const widget of [interactionSelect, viewSelect, autoPlaceSelect, snapToggle]) {
     bb.Toolbars.main_tools.add(widget);
     life.add(() => {
       bb.Toolbars.main_tools.remove(widget);
@@ -556,8 +464,6 @@ export function install(bb: HostRuntime) {
       'mcui_restore_source',
       'mcui_adopt',
       'mcui_regenerate',
-      'mcui_layer_up',
-      'mcui_layer_down',
     ]) {
       const action = byId(id);
       ctor.prototype.menu.addAction(action);
@@ -569,10 +475,12 @@ export function install(bb: HostRuntime) {
       () => current,
       () => viewport,
       () => properties.showLayout(),
+      clipboard,
     ),
   );
   const commandActive = () =>
     !!current &&
+    !viewport?.hasInputGesture() &&
     !focused() &&
     !bb.open_interface &&
     bb.Modes.edit &&
@@ -584,7 +492,7 @@ export function install(bb: HostRuntime) {
       subject: 'mcui',
       priority: 100,
       condition: () => commandActive() && !!current!.state.selection.length,
-      run: copy,
+      run: () => clipboard.copyNodes(),
     }),
   );
   life.add(
@@ -593,7 +501,7 @@ export function install(bb: HostRuntime) {
       priority: 100,
       condition: commandActive,
       run: () => {
-        void paste();
+        void clipboard.paste();
       },
     }),
   );
@@ -620,7 +528,7 @@ export function install(bb: HostRuntime) {
       if (!commandActive()) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      void paste(false, e);
+      void clipboard.paste(false, e);
     }) as EventListener,
     true,
   );
@@ -642,20 +550,13 @@ export function install(bb: HostRuntime) {
       if (!files.length) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      const app = current;
-      void (async () => {
-        try {
-          const destination = app.state.selection.length === 1 ? app.state.selection[0]! : null;
-          for (const file of files) await app.paste(await blobImage(file), true, destination);
-        } catch (error) {
-          app.report(error);
-        }
-      })();
+      void clipboard.pasteFiles(files, true);
     }) as EventListener,
     true,
   );
   life.add(
     bb.Blockbench.on('select_project', () => {
+      clipboard.cancelPending();
       void activate();
     }),
   );
@@ -666,6 +567,7 @@ export function install(bb: HostRuntime) {
   );
   life.add(
     bb.Blockbench.on('close_project', ({ project }: HostObject) => {
+      clipboard.cancelPending();
       const entry = apps.get(project.uuid);
       entry?.app.dispose();
       apps.delete(project.uuid);
@@ -681,6 +583,7 @@ export function install(bb: HostRuntime) {
       const entry = get();
       if (!entry || entry.app.applying) return;
       entry.app.reflectSelection(entry.host.selection(entry.app.state.doc));
+      clipboard.selectionChanged();
       entry.host.syncSelectedTexture(entry.app.state.doc, entry.app.state.selection);
       properties.refresh();
     }),

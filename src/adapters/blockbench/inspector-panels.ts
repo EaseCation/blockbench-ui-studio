@@ -1,18 +1,12 @@
+import { buildSizeEditor, type SizeEditorMode } from './size-editor';
 import type { Studio } from '../../application/studio';
 import { stepExpression } from '../../domain/expression';
 import { stepNumber } from './input-step';
 import { scrubLabel } from './input-scrub';
-import {
-  anchorLabel,
-  common,
-  editCompound,
-  inspect,
-  type InspectorModel,
-} from '../../application/inspector';
-import { sizeModeError } from '../../domain/layout-authoring';
+import { anchorLabel, common, inspect, type InspectorModel } from '../../application/inspector';
 import { hasAppearance } from '../../domain/raster';
-import type { UiDocument, UiNode } from '../../domain/types';
-import { fields } from './property-fields';
+import type { UiDocument, UiNode, SizeRule, Axis } from '../../domain/types';
+import { fields, fieldState, inspectorField, writeField } from './property-fields';
 import {
   button,
   color,
@@ -42,9 +36,7 @@ export class InspectorPanels {
   private opened: Record<string, boolean> = {};
   private refreshing = false;
   private disposed = false;
-  private sizes = new Map<string, string | null>();
-  private sizeDoc?: UiDocument;
-  private sizeKey = '';
+  private sizeEditor: SizeEditorMode = 'expression';
   private context: ControlContext;
   constructor(
     readonly bb: HostRuntime,
@@ -55,6 +47,7 @@ export class InspectorPanels {
       const saved = JSON.parse(localStorage.getItem('mcui_preferences') ?? '{}').inspector;
       if (['element', 'mcui_layout', 'mcui_content'].includes(saved?.tab))
         this.preferred = saved.tab;
+      if (saved?.sizeEditor === 'visual') this.sizeEditor = 'visual';
       if (saved?.open && typeof saved.open === 'object') this.opened = saved.open;
     } catch {
       /* Missing or malformed local preferences use defaults. */
@@ -126,7 +119,15 @@ export class InspectorPanels {
       const preferences = JSON.parse(localStorage.getItem('mcui_preferences') ?? '{}');
       localStorage.setItem(
         'mcui_preferences',
-        JSON.stringify({ ...preferences, inspector: { tab: this.preferred, open: this.opened } }),
+        JSON.stringify({
+          ...preferences,
+          inspector: {
+            ...preferences.inspector,
+            tab: this.preferred,
+            open: this.opened,
+            sizeEditor: this.sizeEditor,
+          },
+        }),
       );
     } catch {
       /* A storage failure must not prevent editing. */
@@ -195,31 +196,25 @@ export class InspectorPanels {
     });
     this.panels.push(panel);
   }
+  private field(id: string) {
+    return this.doc ? fieldState(this.doc, this.nodes, id) : undefined;
+  }
+  private fieldContext(id: string): ControlContext {
+    return { ...this.context, enabled: () => this.context.enabled() && !!this.field(id)?.editable };
+  }
   private value<T = any>(id: string): T | undefined {
-    const field = fields.find((f) => f.id === id);
-    return field ? common(this.nodes.map((n) => field.read(n) as T)) : undefined;
+    return this.field(id)?.value as T | undefined;
   }
   private axis(id: string, axis: number) {
-    const field = fields.find((f) => f.id === id)!;
-    return common(this.nodes.map((n) => (field.read(n) as (string | number)[])[axis]));
+    return this.field(id)?.axes[axis] as string | number | undefined;
   }
   private commit(id: string, value: unknown) {
     const app = this.current();
     if (!app || !this.context.enabled()) throw new Error('当前选区不可编辑');
     const ids = this.nodes.map((n) => n.id);
     if (this.context.key() !== this.model?.key) throw new Error('选区已改变，请重新编辑');
-    const field = fields.find((f) => f.id === id);
-    const change = (doc: UiDocument) => {
-      for (const nodeId of ids) {
-        const node = doc.nodes[nodeId]!;
-        if (node.suspended) throw new Error('请先处理原生修改保护');
-        if (!editCompound(node, id, value)) {
-          if (!field?.write || (field.applies && !field.applies(node)))
-            throw new Error('此属性不适用于当前选区');
-          field.write(node, value, doc);
-        }
-      }
-    };
+    const field = inspectorField(id);
+    const change = (doc: UiDocument) => writeField(doc, ids, id, value);
     app.validateChange(change);
     if (
       !(this.scrubApp === app
@@ -286,7 +281,7 @@ export class InspectorPanels {
   private number(id: string, label?: string, min?: number) {
     const f = fields.find((f) => f.id === id)!;
     return input(
-      this.context,
+      this.fieldContext(id),
       label ?? f.label.replace(/^UI /, ''),
       () => this.value(id),
       (v) => this.commit(id, Number(v)),
@@ -296,7 +291,7 @@ export class InspectorPanels {
   private choose(id: string, label?: string) {
     const f = fields.find((f) => f.id === id)!;
     const node = select(
-      this.context,
+      this.fieldContext(id),
       label ?? f.label.replace(/^UI /, ''),
       f.options!,
       () => this.value(id),
@@ -321,7 +316,7 @@ export class InspectorPanels {
             ? `布局 ${label} 偏移`
             : `图片 ${label} 偏移`;
       const control = input(
-        this.context,
+        this.fieldContext(id),
         name,
         () => this.axis(id, i),
         (v) => {
@@ -352,37 +347,46 @@ export class InspectorPanels {
     if (section === 'fill' || section === 'stroke') this.buildStyle(root, section);
     if (section === 'resolution') this.buildResolution(root);
   }
+  private changeSize(axis: Axis, mutate: (rule: SizeRule, resolved: number) => SizeRule) {
+    const app = this.current();
+    if (!app || !this.context.enabled() || this.context.key() !== this.model?.key)
+      throw new Error('选区已改变或暂不可编辑');
+    const ids = this.nodes.map((n) => n.id),
+      change = (doc: UiDocument) => {
+        for (const id of ids) {
+          const n = doc.nodes[id]!;
+          if (n.suspended) throw new Error('请先处理原生差异');
+          n.layout[axis] = mutate(n.layout[axis], n.rect[axis]);
+        }
+      };
+    const ok =
+      this.scrubApp === app ? app.previewGesture(change) : app.execute('修改 UI 尺寸', change);
+    if (!ok) throw new Error(app.state.error ?? '尺寸无法应用');
+    this.refresh();
+  }
   private buildSize(root: HTMLElement) {
-    this.heading(root, '自身尺寸');
-    const pair = this.textPair(root, 'size', ['W', 'H']);
-    for (const [i, axis] of (['width', 'height'] as const).entries()) {
-      const mode = select(
-        this.context,
-        i ? '高度模式' : '宽度模式',
-        { fixed: '固定', fill: '填充', hug: '包裹', expression: '%' },
-        () => this.value('sizing_' + axis),
-        (v) => this.commit('sizing_' + axis, v),
-        (mode) => this.sizes.get(axis + ':' + mode) ?? null,
-      );
-      mode.classList.add('mcui-inspector-size-mode');
-      pair.children[i]!.append(mode);
-      mode.title = '固定／填充／包裹／百分比表达式；输入具体数值会改为固定尺寸';
-    }
-    const resolved = this.hint(root);
-    this.updates.push(() => {
-      pair.classList.toggle(
-        'mcui-inspector-long',
-        this.nodes.some(
-          (n) => n.layout.width.kind === 'expression' || n.layout.height.kind === 'expression',
-        ),
-      );
-      resolved.textContent = this.nodes.some(
-        (n) => n.layout.width.kind !== 'fixed' || n.layout.height.kind !== 'fixed',
-      )
-        ? (common(this.nodes.map((n) => `实际 ${n.rect.width} × ${n.rect.height}px`)) ??
-          '实际尺寸混合')
-        : '';
+    buildSizeEditor(root, this.context, {
+      read: (axis) =>
+        this.field('size')?.axes[axis === 'width' ? 0 : 1] === undefined
+          ? undefined
+          : this.nodes[0]?.layout[axis],
+      rules: (axis) => this.nodes.map((n) => n.layout[axis]),
+      resolved: (axis) => common(this.nodes.map((n) => n.rect[axis])),
+      mode: () => this.sizeEditor,
+      allowAuto: () => this.nodes.length > 0 && this.nodes.every((n) => n.kind === 'frame'),
+      contentLabel: () =>
+        this.nodes.every((n) => n.kind === 'image')
+          ? '素材原尺寸（扩展）'
+          : this.nodes.every((n) => n.kind === 'frame')
+            ? '布局包围（扩展）'
+            : '素材／布局（扩展）',
+      setMode: (mode) => {
+        this.sizeEditor = mode;
+        this.save();
+      },
+      edit: (axis, change) => this.changeSize(axis, change),
     });
+    this.cell(this.pair(root), '旋转 °', this.number('rotation', '旋转角度'));
     const details = this.disclosure(
       root,
       'limits',
@@ -398,13 +402,13 @@ export class InspectorPanels {
       ['maxHeight', '最大高度'],
     ]) {
       const node = input(
-        this.context,
+        this.fieldContext(key!),
         name!,
         () => this.value(key!),
         (v) => this.commit(key!, v),
         {
-          hint: '正数或留空表示不限；↑/↓ 调整 1px',
-          step: (value, delta) => stepNumber(value, delta, 1),
+          hint: '非负像素或留空表示不限；↑/↓ 调整 1px',
+          step: (value, delta) => stepNumber(value, delta, 0),
         },
       );
       this.cell(max, key === 'maxWidth' ? '最大 W' : 'H', node);
@@ -419,7 +423,7 @@ export class InspectorPanels {
       b.dataset.flow = key;
       flow.append(b);
       this.updates.push(() => {
-        b.disabled = !this.context.enabled();
+        b.disabled = !this.fieldContext('direction').enabled();
         b.setAttribute('aria-pressed', String(this.value('direction') === key));
       });
     }
@@ -429,17 +433,20 @@ export class InspectorPanels {
       right = el('div', 'mcui-inspector-stack');
     auto.append(left, right);
     this.hint(left, '子项对齐');
-    const alignment = () => this.value<any[]>('alignment');
     left.append(
       matrix(
-        this.context,
+        this.fieldContext('alignment'),
         '子项对齐',
         () => {
-          const v = alignment();
-          if (!v) return undefined;
-          const x = v[2] && v[3] === 'row' ? 1 : v[0],
-            y = v[2] && v[3] === 'column' ? 1 : v[1];
-          return `${x / 2},${y / 2}`;
+          if (!this.field('alignment')?.available) return undefined;
+          return common(
+            this.nodes.map((n) => {
+              const v = inspectorField('alignment')!.read(n) as any[];
+              const x = v[2] && v[3] === 'row' ? 1 : v[0],
+                y = v[2] && v[3] === 'column' ? 1 : v[1];
+              return `${x / 2},${y / 2}`;
+            }),
+          );
         },
         (value) => {
           const [x, y] = value.split(',').map((v) => Number(v) * 2);
@@ -458,7 +465,7 @@ export class InspectorPanels {
     this.hint(right, '间距方式');
     right.append(
       select(
-        this.context,
+        this.fieldContext('gapMode'),
         '间距方式',
         { fixed: '固定间距', auto: 'Auto · 两端分布' },
         () =>
@@ -499,7 +506,7 @@ export class InspectorPanels {
         pairs,
         label!,
         input(
-          this.context,
+          this.fieldContext('padding_' + axis),
           `${label}内边距`,
           () => common(this.nodes.flatMap((n) => indices.map((i) => n.frame?.padding[i]))),
           (v) => this.commit('padding_' + axis, Number(v)),
@@ -514,7 +521,7 @@ export class InspectorPanels {
         sides,
         side,
         input(
-          this.context,
+          this.fieldContext('padding'),
           side + '内边距',
           () => this.axis('padding', i),
           (v) => {
@@ -570,7 +577,7 @@ export class InspectorPanels {
     const caption = this.hint(anchors);
     anchors.append(
       matrix(
-        this.context,
+        this.fieldContext('anchorPreset'),
         '定位预设',
         () => this.model?.preset,
         (v) => this.commit('anchorPreset', v),
@@ -591,7 +598,7 @@ export class InspectorPanels {
       this.hint(cell, label!);
       cell.append(
         matrix(
-          this.context,
+          this.fieldContext(id!),
           label!,
           () => this.value(id!),
           (v) => this.commit(id!, v),
@@ -602,15 +609,15 @@ export class InspectorPanels {
       root,
       'contribution',
       () =>
-        '父级包裹 · ' +
+        '父级 Hug · ' +
         (common(this.nodes.map((n) => (n.layout.positioning === 'flow' ? '计入' : '不计入'))) ??
           '混合'),
     );
     contribution.append(
       select(
-        this.context,
+        this.fieldContext('positioning'),
         '父级包裹统计',
-        { flow: '计入父级包裹', absolute: '不计入父级包裹' },
+        { flow: '计入父级 Hug', absolute: '不计入父级 Hug' },
         () => this.value('positioning'),
         (v) => this.commit('positioning', v),
       ),
@@ -618,7 +625,7 @@ export class InspectorPanels {
     const wrap = this.action('将选区组成自动布局', 'mcui_wrap_layout');
     root.append(wrap);
     this.updates.push(() => {
-      position.hidden = !this.model?.hasParent || !this.model.parentStack;
+      position.hidden = !this.field('positioning')?.available || !this.model?.parentStack;
       controlled.textContent = this.model?.anyFlowControlled
         ? '位置由父级自动布局控制；切换为绝对定位后可编辑。'
         : '';
@@ -628,7 +635,7 @@ export class InspectorPanels {
         (this.model?.preset
           ? anchorLabel(this.model.preset.split(',').map(Number))
           : '自定义／混合');
-      contribution.hidden = !this.model?.hasParent || !!this.model.parentStack;
+      contribution.hidden = !this.field('positioning')?.available || !!this.model?.parentStack;
       if (this.model?.hasParent && !this.model.parentFrame)
         contribution.querySelector('summary')!.textContent =
           '定位角色 · ' + (this.value('positioning') === 'absolute' ? '绝对定位' : '自由定位');
@@ -665,7 +672,7 @@ export class InspectorPanels {
     });
     imageOptions.append(
       matrix(
-        this.context,
+        this.fieldContext('image_anchor'),
         '图片锚点',
         () => this.value('image_anchor'),
         (v) => this.commit('image_anchor', v),
@@ -689,7 +696,7 @@ export class InspectorPanels {
         sides,
         side,
         input(
-          this.context,
+          this.fieldContext('nine_insets'),
           '九宫格' + side + '边距',
           () => this.axis('nine_insets', i),
           (v) => {
@@ -726,18 +733,21 @@ export class InspectorPanels {
           ? `源图 ${asset.width}×${asset.height}`
           : `${this.nodes.length} 项 · 素材分别保留`;
       paint.textContent =
-        n?.content?.kind === 'generated'
-          ? '编辑文字'
-          : hasAppearance(n?.appearance)
-            ? '合成后绘画'
-            : n?.content?.kind === 'paint'
-              ? '绘画'
-              : '编辑源图';
+        this.nodes.length !== 1
+          ? '编辑素材'
+          : n?.content?.kind === 'generated'
+            ? '编辑文字'
+            : hasAppearance(n?.appearance)
+              ? '合成后绘画'
+              : n?.content?.kind === 'paint'
+                ? '绘画'
+                : '编辑源图';
       paint.title = hasAppearance(n?.appearance)
         ? '先合并填充与描边为像素，再进入绘画；可撤销并恢复原始来源'
         : '进入原生绘画或源图编辑';
       preview.textContent = this.model?.contentKind === 'nine-slice' ? '编辑切片' : '预览裁切';
-      preview.hidden = ['paint', 'generated'].includes(this.model?.contentKind ?? '');
+      preview.hidden =
+        this.nodes.length !== 1 || ['paint', 'generated'].includes(this.model?.contentKind ?? '');
       for (const b of [paint, preview, replace, makeNine, restore])
         b.disabled = this.nodes.length !== 1 || !this.context.enabled();
       image.hidden = this.model?.contentKind !== 'image';
@@ -745,14 +755,15 @@ export class InspectorPanels {
         (n) => n.content?.kind === 'image' && n.content.mode === 'crop',
       );
       const stretch = this.value('image_mode') === 'stretch';
-      imageOptions.hidden = stretch;
+      imageOptions.hidden = !this.field('image_anchor')?.available;
       inactive.textContent =
         stretch && this.nodes.some((n) => n.content?.kind === 'image' && n.content.onlyDownscale)
           ? '已保存「只允许缩小」；拉伸模式下不生效'
           : '';
       down.indeterminate = this.value('only_downscale') === undefined;
       down.checked = this.value('only_downscale') === true;
-      down.disabled = !this.context.enabled();
+      down.disabled = !this.fieldContext('only_downscale').enabled();
+      downLabel.hidden = !this.field('only_downscale')?.available;
       nine.hidden = this.model?.contentKind !== 'nine-slice';
       const v = this.value<number[]>('nine_insets');
       insets.textContent = v ? `上 ${v[0]} · 右 ${v[1]} · 下 ${v[2]} · 左 ${v[3]}` : '四边参数混合';
@@ -774,7 +785,7 @@ export class InspectorPanels {
     controls.append(
       color(
         this.bb,
-        this.context,
+        this.fieldContext(kind === 'fill' ? 'style_color' : 'style_strokeColor'),
         kind === 'fill' ? '填充颜色' : '描边颜色',
         () => this.value(kind === 'fill' ? 'style_color' : 'style_strokeColor'),
         (v) => this.commit(kind === 'fill' ? 'style_color' : 'style_strokeColor', v),
@@ -794,7 +805,7 @@ export class InspectorPanels {
       extra.append(
         color(
           this.bb,
-          this.context,
+          this.fieldContext('style_endColor'),
           '渐变终点',
           () => this.value('style_endColor'),
           (v) => this.commit('style_endColor', v),
@@ -820,7 +831,9 @@ export class InspectorPanels {
       add.disabled = remove.disabled = !this.context.enabled();
       hint.textContent =
         someOff && !allOff
-          ? '混合 · 部分图层未启用'
+          ? kind === 'fill'
+            ? '部分图层未启用填充；请先统一填充类型，再编辑颜色'
+            : '部分图层未启用描边；请先设置粗细，再编辑颜色'
           : kind === 'stroke' && !allOff
             ? '内描边 · 贴图像素'
             : '';
@@ -829,7 +842,7 @@ export class InspectorPanels {
   private buildResolution(root: HTMLElement) {
     this.heading(root, '尺寸变化');
     const mode = select(
-      this.context,
+      this.fieldContext('resizeStrategy'),
       '尺寸变化策略',
       {
         'text-reflow': '文字 · 调整文本框并重排',
@@ -886,22 +899,6 @@ export class InspectorPanels {
       this.nodes = this.targets();
       this.doc = this.current()?.state.doc;
       this.model = this.doc ? inspect(this.doc, this.nodes) : undefined;
-      if (this.doc && (this.doc !== this.sizeDoc || this.sizeKey !== this.model?.key)) {
-        this.sizes.clear();
-        this.sizeDoc = this.doc;
-        this.sizeKey = this.model!.key;
-        for (const axis of ['width', 'height'] as const)
-          for (const mode of ['fixed', 'fill', 'hug', 'expression'] as const)
-            this.sizes.set(
-              axis + ':' + mode,
-              sizeModeError(
-                this.doc,
-                this.nodes.map((n) => n.id),
-                axis,
-                mode,
-              ),
-            );
-      }
       for (const update of this.updates) update();
       for (const panel of this.panels) panel.form.updateValues();
     } finally {

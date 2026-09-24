@@ -1,16 +1,27 @@
-import type { Handle, Rect } from '../domain/types';
+import { rotationCursor } from './rotation-cursor';
+import type { SnapGuide } from '../application/snapping';
+import type { Handle, Point, Rect } from '../domain/types';
 import type { Measurement } from '../domain/geometry';
 export interface OverlayModel {
+  snapGuides?: SnapGuide[];
   creation?: { rect: Rect; placement: Rect | null; label: string; error: string | null } | null;
   hover?: Rect | null;
-  labels?: { id: string; name: string; rect: Rect }[];
+  hoverPolygon?: Point[];
+  selectedPolygons?: Point[][];
+  selectionAngle?: number;
+  rotationActive?: boolean;
+  rotationEnabled?: boolean;
+  rotationValue?: number;
+  labels?: { id: string; name: string; rect: Rect; angle?: number }[];
   drop?: {
     rect: Rect;
+    polygon?: Point[];
     name: string;
     line?: { from: { x: number; y: number }; to: { x: number; y: number } };
   } | null;
   width: number;
   height: number;
+  selectedLayers?: Rect[];
   selection: Rect | null;
   marquee: Rect | null;
   measurements: Measurement[];
@@ -83,7 +94,35 @@ export function drawOverlay(root: HTMLElement, model: OverlayModel) {
         'stroke-width': width,
       }),
     );
-  if (model.hover) outline(model.hover, '#afcfff', 1, 'data-mcui-hover');
+  for (const rect of model.selectedLayers ?? [])
+    outline(rect, '#7aafff', 1, 'data-mcui-selected-layer');
+  const polygon = (points: Point[], color: string, width: number, attr: string) =>
+    aids!.append(
+      element('polygon', {
+        [attr]: '',
+        points: points.map((p) => `${p.x},${p.y}`).join(' '),
+        fill: 'none',
+        stroke: color,
+        'stroke-width': width,
+      }),
+    );
+  for (const points of model.selectedPolygons ?? [])
+    polygon(points, '#7aafff', 1, 'data-mcui-selected-layer');
+  if (model.hoverPolygon) polygon(model.hoverPolygon, '#afcfff', 1, 'data-mcui-hover');
+  else if (model.hover) outline(model.hover, '#afcfff', 1, 'data-mcui-hover');
+  for (const guide of model.snapGuides ?? [])
+    aids.append(
+      element('line', {
+        'data-mcui-snap': guide.axis,
+        x1: guide.from.x,
+        y1: guide.from.y,
+        x2: guide.to.x,
+        y2: guide.to.y,
+        stroke: '#a259ff',
+        'stroke-width': 1,
+        'vector-effect': 'non-scaling-stroke',
+      }),
+    );
   let labelLayer = svg.querySelector('[data-mcui-labels]');
   if (!labelLayer) {
     labelLayer = element('g', { 'data-mcui-labels': '' });
@@ -104,11 +143,16 @@ export function drawOverlay(root: HTMLElement, model: OverlayModel) {
       });
       labelLayer.append(text);
     }
-    set(text, { x: label.rect.x + 4, y: label.rect.y + 14 });
+    set(text, {
+      x: label.rect.x + 4,
+      y: label.rect.y + 14,
+      transform: `rotate(${label.angle ?? 0} ${label.rect.x} ${label.rect.y})`,
+    });
     if (text.textContent !== label.name) text.textContent = label.name;
   }
   if (model.drop) {
-    outline(model.drop.rect, '#7aafff', 2, 'data-mcui-drop');
+    if (model.drop.polygon) polygon(model.drop.polygon, '#7aafff', 2, 'data-mcui-drop');
+    else outline(model.drop.rect, '#7aafff', 2, 'data-mcui-drop');
     const t = element('text', {
       x: model.drop.rect.x + 6,
       y: model.drop.rect.y + 17,
@@ -190,6 +234,40 @@ export function drawOverlay(root: HTMLElement, model: OverlayModel) {
   }
   const r = model.selection;
   if (r) {
+    const angle = model.selectionAngle ?? 0,
+      transform = `rotate(${angle} ${r.x + r.width / 2} ${r.y + r.height / 2})`;
+    if (model.rotationEnabled === false)
+      for (const e of svg.querySelectorAll('[data-mcui-rotate]')) e.remove();
+    for (const key of model.rotationEnabled === false ? [] : (['nw', 'ne', 'se', 'sw'] as const)) {
+      const [x, y] = positions[key];
+      let area = svg.querySelector(`[data-mcui-rotate="${key}"]`);
+      if (!area) {
+        area = element('rect', {
+          'data-mcui-rotate': key,
+          fill: 'transparent',
+          width: 22,
+          height: 22,
+        });
+        svg.append(area);
+      }
+      set(area, {
+        style: `pointer-events:all;cursor:${rotationCursor(key, angle)}`,
+        x: r.x + r.width * x + (x ? 2 : -24),
+        y: r.y + r.height * y + (y ? 2 : -24),
+        transform,
+      });
+    }
+    let readout = svg.querySelector('[data-mcui-angle]');
+    if (!readout) {
+      readout = element('text', { 'data-mcui-angle': '', fill: '#bed7fa', 'font-size': 12 });
+      svg.append(readout);
+    }
+    set(readout, {
+      x: r.x + r.width / 2,
+      y: r.y + r.height / 2,
+      display: model.rotationActive ? '' : 'none',
+    });
+    readout.textContent = `${Math.round((model.rotationValue ?? 0) * 10) / 10}°`;
     let border = svg.querySelector('[data-mcui-selection]');
     if (!border) {
       border = element('rect', {
@@ -200,7 +278,7 @@ export function drawOverlay(root: HTMLElement, model: OverlayModel) {
       });
       svg.append(border);
     }
-    set(border, { x: r.x, y: r.y, width: r.width, height: r.height });
+    set(border, { x: r.x, y: r.y, width: r.width, height: r.height, transform });
     for (const [key, [x, y]] of Object.entries(positions)) {
       let handle = svg.querySelector(`[data-mcui-handle="${key}"]`);
       if (!handle) {
@@ -221,10 +299,13 @@ export function drawOverlay(root: HTMLElement, model: OverlayModel) {
         });
         svg.append(handle);
       }
-      set(handle, { x: r.x + r.width * x - 4, y: r.y + r.height * y - 4 });
+      set(handle, { x: r.x + r.width * x - 4, y: r.y + r.height * y - 4, transform });
     }
   } else
-    for (const e of svg.querySelectorAll('[data-mcui-selection],[data-mcui-handle]')) e.remove();
+    for (const e of svg.querySelectorAll(
+      '[data-mcui-selection],[data-mcui-handle],[data-mcui-rotate],[data-mcui-angle]',
+    ))
+      e.remove();
   let measurements = svg.querySelector('[data-mcui-measurements]');
   if (!measurements) {
     measurements = element('g', { 'data-mcui-measurements': '' });

@@ -27,6 +27,7 @@ export interface HostRuntime {
   Formats: HostObject;
   Panel: HostObject;
   Action: HostObject;
+  Toggle: HostObject;
   Tool: HostObject;
   Keybind: HostObject;
   MenuBar: HostObject;

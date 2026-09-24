@@ -6,7 +6,7 @@ const options = {
   target: 'es2020',
   outfile: 'dist/mcui_studio.js',
   sourcemap: true,
-  loader: { '.css': 'text' },
+  loader: { '.css': 'text', '.svg': 'text' },
   logLevel: 'info',
 };
 if (process.argv.includes('--watch')) {

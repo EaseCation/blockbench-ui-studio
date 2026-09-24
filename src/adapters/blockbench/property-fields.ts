@@ -1,16 +1,22 @@
-import { setDirection, setPositioning, setSizeMode } from '../../domain/layout-authoring';
+import {
+  editCompound,
+  flowControlled,
+  inspectProperty,
+  type InspectorProperty,
+} from '../../application/inspector';
+import { normalizeAngle } from '../../domain/transform';
+import { setDirection, setPositioning } from '../../domain/layout-authoring';
 import type { UiDocument, UiNode } from '../../domain/types';
 import { defaultAppearance, defaultFrame } from '../../domain/types';
 import { formatSize, parseSize, formatOffset, parseOffset } from '../../domain/expression';
 
-export interface Field {
+export interface Field extends InspectorProperty {
   id: string;
   label: string;
   type: string;
   propertyType?: string;
   read(node: UiNode): unknown;
   write?(node: UiNode, value: any, doc: UiDocument): void;
-  applies?(node: UiNode): boolean;
   options?: Record<string, string>;
   dimensions?: number;
   axes?: [string, string];
@@ -23,6 +29,17 @@ for (const [yi, y] of [0, 0.5, 1].entries())
   for (const [xi, x] of [0, 0.5, 1].entries())
     anchors[`${x},${y}`] = `${['上', '中', '下'][yi]}${['左', '中', '右'][xi]}`;
 export const fields: Field[] = [
+  {
+    id: 'rotation',
+    label: 'UI 旋转',
+    type: 'number',
+    propertyType: 'number',
+    read: (n) => n.rotation ?? 0,
+    write: (n, v) => {
+      n.rotation = normalizeAngle(Number(v));
+    },
+    description: '绕元素中心旋转；正数逆时针、负数顺时针。角点外侧拖动旋转，Shift 吸附 15°。',
+  },
   {
     id: 'status',
     label: 'UI 状态',
@@ -38,6 +55,8 @@ export const fields: Field[] = [
     axes: ['X', 'Y'],
     propertyType: 'array',
     dimensions: 2,
+    disabled: (n, doc) =>
+      flowControlled(doc, n) ? '位置由父级自动布局控制；请先切换为绝对定位' : undefined,
     description:
       'X、Y 坐标偏移：支持 16px、-8px、50% - 8px。百分比分别参照父级宽、高，在锚点位置上叠加；自动布局的流式子项由父级排列控制。Enter 或失焦提交。',
     read: (n) => [
@@ -70,14 +89,14 @@ export const fields: Field[] = [
         n.layout.height = parseSize(String(v[1]));
     },
     description:
-      'W 宽、H 高。支持 80px、100% - 16px、75% + 12px。百分比参照父级对应尺寸；fill 填充剩余空间，hug 包裹内容。根节点没有父级百分比。Enter 或失焦提交，多选时只更新修改的轴。',
+      'W 宽、H 高。例如 100% - 16px、100%cm + 8px。支持 px、%、%c、%cm、%sm、%x、%y 的加减组合、fill、default。auto 仅用于 Frame 自动跟随子元素边界；hug 为素材/内容尺寸的插件扩展。根节点没有父级百分比。Enter 或失焦提交，多选时只更新修改的轴。',
   },
   ...(['minWidth', 'minHeight'] as const).map((axis, i) => ({
     id: axis,
     label: i ? 'UI 最小高' : 'UI 最小宽',
     type: 'number',
     propertyType: 'number',
-    min: 1,
+    min: 0,
     read: (n: UiNode) => n.layout[axis],
     write: (n: UiNode, v: number) => {
       n.layout[axis] = v;
@@ -88,14 +107,14 @@ export const fields: Field[] = [
     label: i ? 'UI 最大高' : 'UI 最大宽',
     type: 'mcui_draft',
     read: (n: UiNode) => (n.layout[axis] === undefined ? '' : String(n.layout[axis])),
-    description: '最大尺寸，单位为 UI 像素；只接受正数或空白，空白表示不限。不支持百分比。',
+    description: '最大尺寸，单位为 UI 像素；只接受非负数或空白，空白表示不限。不支持百分比。',
     write: (n: UiNode, v: string) => {
       if (v.trim() === '') {
         delete n.layout[axis];
         return;
       }
       const x = Number(v);
-      if (!Number.isFinite(x) || x < 1) throw new Error('最大尺寸必须是正数或空白');
+      if (!Number.isFinite(x) || x < 0) throw new Error('最大尺寸必须是非负数或空白');
       n.layout[axis] = x;
     },
   })),
@@ -104,6 +123,7 @@ export const fields: Field[] = [
     label: 'UI 定位',
     type: 'inline_select',
     options: { flow: '参与布局', absolute: '绝对定位' },
+    applies: (n, doc) => !!n.parent && doc.nodes[n.parent]?.kind === 'frame',
     read: (n) => n.layout.positioning,
     write: (n, v, doc) => setPositioning(doc, n, v),
   },
@@ -112,6 +132,7 @@ export const fields: Field[] = [
     label: i ? 'UI 自身锚点' : 'UI 父锚点',
     type: 'mcui_anchor',
     options: anchors,
+    applies: (n: UiNode, doc: UiDocument) => !!n.parent && !flowControlled(doc, n),
     read: (n: UiNode) => n.layout[key].join(','),
     write: (n: UiNode, v: string) => {
       n.layout[key] = v.split(',').map(Number) as [number, number];
@@ -151,11 +172,15 @@ export const fields: Field[] = [
       type: 'color',
       applies: (n) =>
         n.kind === 'image' &&
-        (key === 'strokeColor' ||
-          (key === 'endColor'
+        (key === 'strokeColor'
+          ? (n.appearance?.strokeWidth ?? 0) > 0
+          : key === 'endColor'
             ? n.appearance?.fill === 'linear'
-            : !!n.appearance && n.appearance.fill !== 'none')),
-      read: (n) => (n.appearance ?? defaultAppearance())[key],
+            : !!n.appearance && n.appearance.fill !== 'none'),
+      read: (n) => {
+        const value = (n.appearance ?? defaultAppearance())[key];
+        return (value.length === 7 ? value + 'ff' : value).toLowerCase();
+      },
       write: (n, v) => {
         (n.appearance ??= defaultAppearance())[key] = v;
       },
@@ -167,7 +192,7 @@ export const fields: Field[] = [
     label: '渐变角度',
     type: 'number',
     propertyType: 'number',
-    applies: (n) => n.appearance?.fill === 'linear',
+    applies: (n) => n.kind === 'image' && n.appearance?.fill === 'linear',
     read: (n) => n.appearance?.angle ?? 90,
     write: (n, v) => {
       (n.appearance ??= defaultAppearance()).angle = v;
@@ -221,7 +246,7 @@ export const fields: Field[] = [
     label: 'UI 图片锚点',
     type: 'mcui_anchor',
     options: anchors,
-    applies: (n) => n.content?.kind === 'image',
+    applies: (n) => n.content?.kind === 'image' && n.content.mode !== 'stretch',
     read: (n) => (n.content?.kind === 'image' ? n.content.anchor.join(',') : ''),
     write: (n, v) => {
       if (n.content?.kind === 'image') n.content.anchor = v.split(',').map(Number);
@@ -259,7 +284,8 @@ export const fields: Field[] = [
     label: 'UI 只允许缩小',
     type: 'checkbox',
     propertyType: 'boolean',
-    applies: (n) => n.content?.kind === 'image',
+    applies: (n) =>
+      n.content?.kind === 'image' && !['stretch', 'original'].includes(n.content.mode),
     read: (n) => n.content?.kind === 'image' && n.content.onlyDownscale,
     write: (n, v) => {
       if (n.content?.kind === 'image') n.content.onlyDownscale = v;
@@ -355,24 +381,13 @@ export const fields: Field[] = [
     description:
       '点击九点图直接设置子项在容器内的对齐位置。横向／纵向自动换算主轴与交叉轴；两端分布将剩余空间分配到子项之间，此时另一轴仍可选择。',
   },
-  ...(['width', 'height'] as const).map(
-    (axis): Field => ({
-      id: 'sizing_' + axis,
-      label: axis === 'width' ? 'UI 宽度策略' : 'UI 高度策略',
-      type: 'inline_select',
-      options: { fixed: '固定', fill: '填充', hug: '包裹', expression: '%' },
-      read: (n) => n.layout[axis].kind,
-      write: (n, v) => setSizeMode(n, axis, v),
-      description:
-        '固定取当前显示尺寸；填充占用父级剩余空间；包裹根据内容计算；% 初始为父级 100%。精确数值和百分比±像素仍在“元素”的 W/H 输入。根节点不能使用父级百分比，父包裹与子填充的循环会回滚。',
-    }),
-  ),
 ];
 
 const explanations: Record<string, string> = {
   minWidth: '最小宽度，单位为 UI 像素。九宫格还会受到四边边距和中心像素的下限约束。',
   minHeight: '最小高度，单位为 UI 像素。九宫格还会受到四边边距和中心像素的下限约束。',
-  positioning: '参与布局：由父 Frame 自动排列。绝对定位：使用锚点和位置偏移，不参与父级 Hug 计算。',
+  positioning:
+    '参与布局：由父 Frame 自动排列。绝对定位：使用锚点和位置偏移，不参与父级 Hug / Stack Auto 计算。自由 Frame 的 Auto 边界仍包含所有可见子项。',
   anchorFrom: '选择父级上的参照点。UI 位置偏移相对此点计算。',
   anchorTo: '选择自身对齐到父锚点的点。例如父锚点和自身锚点都为中心时居中。',
   paint_resize:
@@ -392,3 +407,65 @@ const explanations: Record<string, string> = {
   align: '交叉轴对齐。例如横向布局时，控制子项的垂直对齐。',
 };
 for (const field of fields) field.description = explanations[field.id] ?? field.description;
+
+const compoundDefinitions: Field[] = [
+  {
+    id: 'anchorPreset',
+    label: '定位预设',
+    type: 'compound',
+    read: (n) => n.layout.anchorFrom,
+    applies: (n, doc) => !!n.parent && !flowControlled(doc, n),
+  },
+  {
+    id: 'gapMode',
+    label: '间距方式',
+    type: 'compound',
+    read: (n) => n.frame?.justify,
+    applies: (n) => n.kind === 'frame' && n.frame?.direction !== 'free',
+  },
+  ...['horizontal', 'vertical', 'all'].map((axis) => ({
+    id: 'padding_' + axis,
+    label: '内边距',
+    type: 'compound',
+    read: (n: UiNode) => n.frame?.padding,
+    applies: (n: UiNode) => n.kind === 'frame',
+  })),
+  {
+    id: 'resizeStrategy',
+    label: '尺寸变化策略',
+    type: 'compound',
+    read: (n) => n.content?.kind,
+    applies: (n) => n.content?.kind === 'paint' || n.content?.kind === 'image',
+  },
+];
+const compounds: Field[] = compoundDefinitions.map((f) => ({
+  ...f,
+  write: (n: UiNode, v: unknown) => {
+    if (!editCompound(n, f.id, v)) throw new Error('此属性不适用于当前对象');
+  },
+}));
+const inspectorFields = new Map([...fields, ...compounds].map((field) => [field.id, field]));
+export const inspectorField = (id: string) => inspectorFields.get(id);
+export function fieldState(doc: UiDocument, nodes: UiNode[], id: string) {
+  const field = inspectorField(id);
+  if (!field) throw new Error('未知 UI 属性：' + id);
+  const state = inspectProperty(doc, nodes, field);
+  // Flow/absolute has different effects under Stack and free containers. Do not
+  // offer a shared control that changes arrangement for only part of a selection.
+  if (
+    id === 'positioning' &&
+    new Set(nodes.map((n) => n.parent && doc.nodes[n.parent]?.frame?.engineType === 'stack_panel'))
+      .size > 1
+  )
+    return { ...state, available: false, editable: false, reason: '选区的父级布局类型不同' };
+  if (id === 'resizeStrategy' && new Set(nodes.map((n) => n.content?.kind)).size > 1)
+    return { ...state, editable: false, reason: '不同素材类型的尺寸变化策略不同，请分别选择' };
+  return state;
+}
+export function writeField(doc: UiDocument, ids: string[], id: string, value: unknown) {
+  const nodes = ids.map((key) => doc.nodes[key]!);
+  const field = inspectorField(id),
+    state = fieldState(doc, nodes, id);
+  if (!field?.write || !state.editable) throw new Error(state.reason ?? '当前属性不可编辑');
+  for (const node of nodes) field.write(node, value, doc);
+}

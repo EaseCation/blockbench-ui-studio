@@ -9,6 +9,8 @@ export interface DrawingPoint {
   shift: boolean;
   alt: boolean;
   space: boolean;
+  control?: boolean;
+  inside?: boolean;
 }
 export interface DrawRequest {
   kind: DrawKind;
@@ -57,7 +59,7 @@ export function insertDrawing(doc: UiDocument, id: Id, request: DrawRequest) {
   doc.nodes[id] = node;
   doc.roots.push(id);
   if (target) reparentNodes(doc, [id], target.parentId, target.index);
-  retainWorldRect(doc, node, rect);
+  if (!target) retainWorldRect(doc, node, rect);
   return node;
 }
 export function previewDrawing(doc: UiDocument, request: DrawRequest): Rect {
@@ -71,10 +73,12 @@ export function previewDrawing(doc: UiDocument, request: DrawRequest): Rect {
   let id = 'mcui-drawing-preview';
   while (candidate.nodes[id]) id += '-';
   insertDrawing(candidate, id, request);
-  return layout(candidate).nodes[id]!.rect;
+  const result = layout(candidate).nodes[id]!;
+  return result.bounds ?? result.rect;
 }
 /** Gesture state is pure and never writes the document, a bitmap or Undo. */
 export class DrawingMachine {
+  constructor(private snap?: (rect: Rect, origin: Point, point: DrawingPoint) => Rect) {}
   request: DrawRequest | null = null;
   private origin: Point = { x: 0, y: 0 };
   private startScreen: Point = { x: 0, y: 0 };
@@ -100,10 +104,11 @@ export class DrawingMachine {
       this.origin.y += point.world.y - this.last.world.y;
     }
     this.last = point;
-    this.request.rect = drawingRect(this.origin, point.world, point.shift, point.alt);
+    const rect = drawingRect(this.origin, point.world, point.shift, point.alt);
+    this.request.rect = this.snap?.(rect, this.origin, point) ?? rect;
   }
-  modifiers(shift: boolean, alt: boolean, space: boolean) {
-    if (this.last) this.update({ ...this.last, shift, alt, space });
+  modifiers(shift: boolean, alt: boolean, space: boolean, control = false) {
+    if (this.last) this.update({ ...this.last, shift, alt, space, control });
   }
   finish(): DrawRequest | null {
     const result = this.moved ? this.request : null;

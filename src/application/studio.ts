@@ -1,3 +1,24 @@
+import { applyResolvedLayout } from '../domain/auto-frame';
+import { reorderSelection, type LayerOrder } from '../domain/layer-order';
+import {
+  clearContentArchive,
+  keepContentBounds,
+  fillRasterSize,
+  type PreparedImage,
+  type ImagePasteOptions,
+  type StyleClipboard,
+} from './clipboard';
+import {
+  center,
+  rotateVector,
+  around,
+  transformPoint,
+  normalizeAngle,
+  worldPose,
+  poseInParent,
+  documentTransforms,
+  identity,
+} from '../domain/transform';
 import { groupNodes, ungroupNodes } from '../domain/grouping';
 import { contentProviders, type ContentData } from './content';
 import {
@@ -169,11 +190,16 @@ export class Studio {
     const scene = this.resolveLayout(doc),
       bitmaps: Record<Id, Pixels> = {},
       keys = new Map<Id, string>();
+    applyResolvedLayout(doc, scene);
     for (const id of scene.order) {
       const n = doc.nodes[id]!,
         r = scene.nodes[id]!.rect;
-      n.rect = { ...r };
       if (!n.content || n.suspended) continue;
+      if (r.width === 0 || r.height === 0) {
+        keys.set(id, 'zero-size');
+        if (!doc.bindings[id]?.textureId) bitmaps[id] = blank(1, 1);
+        continue;
+      }
       if (n.content.kind === 'generated') {
         const c = n.content,
           provider = contentProviders.get(c.provider),
@@ -453,6 +479,10 @@ export class Studio {
         height: kind === 'image' ? 32 : 90,
       };
       const n = createNode(id, kind === 'image' ? 'Image' : 'Frame', kind, rect);
+      if (kind === 'frame') {
+        n.layout.width = { kind: 'auto' };
+        n.layout.height = { kind: 'auto' };
+      }
       n.parent = parent;
       if (p) {
         n.layout.offset = { x: 8, y: 8 };
@@ -526,23 +556,43 @@ export class Studio {
     this.select(copies);
   }
   reorder(id: Id, direction: number) {
-    this.execute('调整图层顺序', (doc) => {
-      const n = doc.nodes[id];
-      if (!n) return;
-      const list = siblings(doc, n),
-        i = list.indexOf(id),
-        j = Math.max(0, Math.min(list.length - 1, i + direction));
-      list.splice(i, 1);
-      list.splice(j, 0, id);
+    if (!direction) return false;
+    return this.reorderSelection(direction > 0 ? 'forward' : 'backward', [id]);
+  }
+  reorderSelection(order: LayerOrder, ids = this.state.selection) {
+    if (
+      !ids.length ||
+      ids.some(
+        (id) =>
+          !this.state.doc.nodes[id] ||
+          this.state.doc.nodes[id]?.suspended ||
+          this.state.scene.nodes[id]?.locked,
+      )
+    )
+      return false;
+    // Preflight on a shallow tree copy: ordering alone does not clone large pixel assets.
+    const candidate = {
+      ...this.state.doc,
+      roots: [...this.state.doc.roots],
+      nodes: Object.fromEntries(
+        Object.entries(this.state.doc.nodes).map(([id, n]) => [
+          id,
+          { ...n, children: [...n.children] },
+        ]),
+      ),
+    };
+    if (!reorderSelection(candidate, ids, order)) return false;
+    return this.execute('调整图层顺序', (doc) => {
+      reorderSelection(doc, ids, order);
     });
   }
   reparent(id: Id, parent: Id | null) {
     this.execute('调整图层父级', (doc) => reparentNodes(doc, [id], parent));
   }
   movePreview: { x: number; y: number } | null = null;
-  previewMove(dx: number, dy: number) {
+  previewMove(dx: number, dy: number, precise = false) {
     if (!this.gesture) return;
-    this.movePreview = { x: Math.round(dx), y: Math.round(dy) };
+    this.movePreview = { x: precise ? dx : Math.round(dx), y: precise ? dy : Math.round(dy) };
     this.host.previewMove(
       this.gesture,
       this.state.selection,
@@ -550,7 +600,7 @@ export class Studio {
       this.movePreview.y,
     );
   }
-  finishMove(dx: number, dy: number, drop: DropIntent | null) {
+  finishMove(dx: number, dy: number, drop: DropIntent | null, precise = false) {
     if (!this.gesture) return;
     this.host.clearPreview();
     this.movePreview = null;
@@ -566,9 +616,14 @@ export class Studio {
     const ids = this.state.scene.order.filter((id) => this.state.selection.includes(id));
     const ok = this.previewGesture((doc) => {
       const rects: Record<Id, Rect> = {};
+      const transforms = documentTransforms(doc);
       for (const id of ids) {
-        const n = doc.nodes[id]!;
-        rects[id] = { ...n.rect, x: n.rect.x + Math.round(dx), y: n.rect.y + Math.round(dy) };
+        const pose = worldPose(doc, id, transforms);
+        rects[id] = {
+          ...pose.rect,
+          x: pose.rect.x + (precise ? dx : Math.round(dx)),
+          y: pose.rect.y + (precise ? dy : Math.round(dy)),
+        };
       }
       if (drop) {
         const target = doc.nodes[drop.parentId];
@@ -584,6 +639,13 @@ export class Studio {
         for (const id of ids) {
           const n = doc.nodes[id]!,
             parent = n.parent ? doc.nodes[n.parent] : undefined;
+          rects[id] = poseInParent(
+            doc,
+            n.parent,
+            rects[id]!,
+            worldPose(doc, id, transforms).rotation,
+            transforms,
+          ).rect;
           if (parent?.frame?.engineType === 'stack_panel' && n.layout.positioning === 'flow') {
             const axis = parent.frame.direction === 'row' ? 'x' : 'y',
               size = axis === 'x' ? 'width' : 'height';
@@ -593,7 +655,7 @@ export class Studio {
               (other) => doc.nodes[other]!.rect[axis] + doc.nodes[other]!.rect[size] / 2 > center,
             );
             parent.children.splice(i < 0 ? parent.children.length : i, 0, id);
-          } else retainWorldRect(doc, n, rects[id]!);
+          } else retainWorldRect(doc, n, rects[id]!, false);
         }
       }
     });
@@ -611,8 +673,11 @@ export class Studio {
         !n.rasterSize &&
         (old.width !== r.width || old.height !== r.height)
       ) {
-        n.content.origin.x += Math.round(r.x - old.x);
-        n.content.origin.y += Math.round(r.y - old.y);
+        const a = center(old),
+          b = center(r),
+          local = rotateVector({ x: b.x - a.x, y: b.y - a.y }, -(n.rotation ?? 0));
+        n.content.origin.x += Math.round(local.x + (old.width - r.width) / 2);
+        n.content.origin.y += Math.round(local.y + (old.height - r.height) / 2);
       }
       if (r.width !== old.width)
         n.layout.width = resizeRule(n.layout.width, r.width - old.width, r.width);
@@ -665,8 +730,8 @@ export class Studio {
         ? Math.max(0, Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length))
         : 8;
       frame.frame!.padding = [0, 0, 0, 0];
-      frame.layout.width = { kind: 'hug' };
-      frame.layout.height = { kind: 'hug' };
+      frame.layout.width = { kind: 'auto' };
+      frame.layout.height = { kind: 'auto' };
       frame.layout.positioning = selected[0]!.layout.positioning;
       const parent = frame.parent ? doc.nodes[frame.parent] : undefined;
       frame.layout.offset = {
@@ -701,6 +766,7 @@ export class Studio {
     const ids = this.state.selection;
     this.previewGesture((doc) => {
       const rects: Record<Id, Rect> = {};
+      const transforms = documentTransforms(doc);
       for (const id of ids) {
         const n = doc.nodes[id];
         if (n) {
@@ -712,7 +778,9 @@ export class Studio {
             !n.rasterSize
           )
             n.rasterSize = { width: n.rect.width, height: n.rect.height };
-          rects[id] = mapRect(n.rect, original, target);
+          const pose = worldPose(doc, id, transforms);
+          const world = ids.length === 1 ? target : mapRect(pose.rect, original, target);
+          rects[id] = poseInParent(doc, n.parent, world, pose.rotation, transforms).rect;
         }
       }
       this.changeRects(doc, rects);
@@ -746,47 +814,87 @@ export class Studio {
     });
   }
   async paste(image: ImportedImage, forceNew = false, destination?: Id | null) {
+    const doc = this.state.doc,
+      selection = [...this.state.selection];
     const pixels = await this.images.decode(image.png);
-    if (this.disposed) return;
-    const selected =
-      this.state.selection.length === 1
-        ? this.state.doc.nodes[this.state.selection[0]!]
-        : undefined;
-    const existing = !forceNew && selected?.kind === 'image' ? selected.id : null;
-    const id = existing ?? this.images.id();
-    this.execute('粘贴图片', (doc) => {
-      let n = doc.nodes[id];
-      if (!n) {
-        n = createNode(id, image.name, 'image', {
-          x: 0,
-          y: 0,
-          width: image.width,
-          height: image.height,
+    if (
+      this.disposed ||
+      this.state.doc !== doc ||
+      JSON.stringify(selection) !== JSON.stringify(this.state.selection)
+    )
+      return;
+    return this.pasteImages([{ name: image.name, pixels }], { forceNew, destination, selection });
+  }
+  pasteImages(images: PreparedImage[], options: ImagePasteOptions = {}) {
+    if (!images.length || this.disposed) return false;
+    const selection = options.selection ?? this.state.selection;
+    const selected = selection.length === 1 ? this.state.doc.nodes[selection[0]!] : undefined;
+    const existing =
+      !options.forceNew && images.length === 1 && selected?.kind === 'image' ? selected.id : null;
+    const parent = options.destination === undefined ? (selected?.id ?? null) : options.destination;
+    const ids = images.map(() => existing ?? this.images.id());
+    return this.execute(
+      existing ? '粘贴图片填充' : '粘贴图片图层',
+      (doc) => {
+        if (selected && (selected.suspended || this.state.scene.nodes[selected.id]?.locked))
+          throw new Error('请先解锁或处理选区的原生修改保护');
+        images.forEach(({ name, pixels }, i) => {
+          const id = ids[i]!;
+          let n = doc.nodes[id];
+          if (!n) {
+            n = createNode(id, name, 'image', {
+              x: 0,
+              y: 0,
+              width: pixels.width,
+              height: pixels.height,
+            });
+            n.parent = parent;
+            (parent ? doc.nodes[parent]!.children : doc.roots).push(id);
+            doc.nodes[id] = n;
+          } else keepContentBounds(n);
+          n.rasterSize = fillRasterSize(n, pixels.width, pixels.height);
+          n.content = {
+            kind: 'image',
+            source: this.putSource(doc, pixels),
+            mode: existing ? 'fit' : 'original',
+            anchor: [0.5, 0.5],
+            scale: 1,
+            offset: { x: 0, y: 0 },
+            onlyDownscale: false,
+          };
+          clearContentArchive(n);
         });
-        const parent = destination === undefined ? (selected?.id ?? null) : destination;
-        n.parent = parent;
-        (parent ? doc.nodes[parent]!.children : doc.roots).push(id);
-        doc.nodes[id] = n;
+      },
+      () => ids,
+    );
+  }
+  pasteProperties(properties: StyleClipboard, pixels?: Pixels, selection = this.state.selection) {
+    const ids = topSelection(this.state.doc, selection).filter(
+      (id) => this.state.doc.nodes[id]?.kind === 'image',
+    );
+    if (!ids.length) {
+      this.report('请选择 Image 粘贴外观属性；Frame 不绘制自身内容');
+      return false;
+    }
+    return this.execute('粘贴属性', (doc) => {
+      for (const id of ids) {
+        const n = doc.nodes[id]!;
+        if (n.suspended || this.state.scene.nodes[id]?.locked)
+          throw new Error('请先解锁或处理选区的原生修改保护');
+        n.opacity = properties.opacity;
+        if (properties.appearance) n.appearance = clone(properties.appearance);
+        else delete n.appearance;
+        if (properties.fill && n.content?.kind !== 'generated') {
+          if (!pixels) throw new Error('图片填充尚未准备完成');
+          keepContentBounds(n);
+          n.content = { ...clone(properties.fill.recipe), source: this.putSource(doc, pixels) };
+          if (properties.fill.preserveResolution && n.content.kind !== 'nine-slice')
+            n.rasterSize = fillRasterSize(n, pixels.width, pixels.height);
+          else delete n.rasterSize;
+          clearContentArchive(n);
+        }
       }
-      const density = existing
-        ? Math.max(1, image.width / n.rect.width, image.height / n.rect.height)
-        : 1;
-      n.rasterSize = existing
-        ? { width: Math.round(n.rect.width * density), height: Math.round(n.rect.height * density) }
-        : { width: image.width, height: image.height };
-      delete n.appearance;
-      n.content = {
-        kind: 'image',
-        source: this.putSource(doc, pixels),
-        mode: existing ? 'fit' : 'original',
-        anchor: [0.5, 0.5],
-        scale: 1,
-        offset: { x: 0, y: 0 },
-        onlyDownscale: false,
-      };
-      delete n.suspended;
     });
-    this.select([id]);
   }
   async importDocument(source: UiDocument, ids: Map<Id, Id>, parent: Id | null) {
     validateDocument(source);
@@ -964,17 +1072,22 @@ export class Studio {
       const n = original
         ? clone(original)
         : createNode(snap.id, snap.name, snap.kind === 'frame' ? 'frame' : 'image', snap.rect);
+      if (!original && n.kind === 'frame') {
+        n.layout.width = { kind: 'auto' };
+        n.layout.height = { kind: 'auto' };
+      }
       n.id = snap.id;
       n.name = snap.name;
       n.children = [];
       n.parent = snap.parentId ?? null;
       n.rect = {
         ...snap.rect,
-        width: Math.max(1, snap.rect.width),
-        height: Math.max(1, snap.rect.height),
+        width: Math.max(0, snap.rect.width),
+        height: Math.max(0, snap.rect.height),
       };
       n.visible = snap.visible;
       n.locked = snap.locked;
+      if (snap.rotation) n.rotation = snap.rotation;
       delete n.suspended;
       if (!original && n.kind === 'image') {
         const pixels =
@@ -1019,6 +1132,11 @@ export class Studio {
       }
     if (JSON.stringify(doc.roots) !== JSON.stringify(native.roots)) changed = true;
     doc.roots = [...native.roots];
+    const previousTransforms = documentTransforms(previous);
+    for (const snap of Object.values(snapshots)) {
+      doc.nodes[snap.id]!.parent = snap.parentId ?? null;
+      doc.nodes[snap.id]!.children = [...(snap.children ?? [])];
+    }
     for (const snap of Object.values(snapshots)) {
       const n = doc.nodes[snap.id]!;
       const old = previous.nodes[snap.id];
@@ -1044,8 +1162,8 @@ export class Studio {
       if (snap.unsupported) {
         n.rect = {
           ...snap.rect,
-          width: Math.max(1, snap.rect.width),
-          height: Math.max(1, snap.rect.height),
+          width: Math.max(0, snap.rect.width),
+          height: Math.max(0, snap.rect.height),
         };
         n.suspended = snap.unsupported;
         continue;
@@ -1053,8 +1171,8 @@ export class Studio {
       if (onOpen) {
         n.rect = {
           ...snap.rect,
-          width: Math.max(1, snap.rect.width),
-          height: Math.max(1, snap.rect.height),
+          width: Math.max(0, snap.rect.width),
+          height: Math.max(0, snap.rect.height),
         };
         n.suspended = '检测到未安装插件时的修改，保留当前结果；可采用结果或重新生成';
         continue;
@@ -1078,12 +1196,21 @@ export class Studio {
         } else if (pixels) n.suspended = '成品贴图已被手工修改，自动生成已暂停';
       }
       if (!n.suspended) {
+        if (snap.rotation !== undefined && (n.rotation !== undefined || snap.rotation !== 0))
+          n.rotation = normalizeAngle(snap.rotation);
         const parent = n.parent ? doc.nodes[n.parent] : undefined;
         // Reparenting retains world position for free layout; Flow parents decide the final placement.
         // New and duplicate nodes keep their inherited size rules.
         if (newlyAdded.has(n.id) || old?.parent !== n.parent) {
+          let rect = snap.rect;
+          if (old && old.parent !== n.parent) {
+            const pose = worldPose(previous, n.id, previousTransforms),
+              placement = poseInParent(doc, n.parent, pose.rect, pose.rotation);
+            rect = placement.rect;
+            if (n.rotation !== undefined || placement.rotation) n.rotation = placement.rotation;
+          }
           if (parent?.frame?.engineType === 'stack_panel') n.layout.positioning = 'flow';
-          else retainWorldRect(doc, n, snap.rect);
+          else retainWorldRect(doc, n, rect);
         } else if (JSON.stringify(n.rect) !== JSON.stringify(snap.rect)) {
           if (
             parent?.frame?.direction !== 'free' &&
@@ -1116,10 +1243,59 @@ export class Studio {
         Object.assign(candidate, doc);
       });
   }
+  rotationGestureAllowed() {
+    return (
+      this.state.selection.length < 2 ||
+      !this.state.selection.some((id) => {
+        const n = this.state.doc.nodes[id]!;
+        return (
+          n.layout.positioning === 'flow' &&
+          n.parent &&
+          this.state.doc.nodes[n.parent]?.frame?.engineType === 'stack_panel'
+        );
+      })
+    );
+  }
+  rotateSelection(delta: number, pivot: { x: number; y: number }) {
+    const ids = this.state.selection;
+    if (!this.rotationGestureAllowed()) return false;
+    return this.previewGesture((doc) => {
+      const transforms = documentTransforms(doc);
+      const poses = ids.map((id) => [id, worldPose(doc, id, transforms)] as const);
+      for (const [id, pose] of poses) {
+        const n = doc.nodes[id]!;
+        if (n.suspended) throw new Error('请先处理原生差异');
+        const c = transformPoint(center(pose.rect), around(pivot, delta));
+        const p = poseInParent(
+          doc,
+          n.parent,
+          { ...pose.rect, x: c.x - pose.rect.width / 2, y: c.y - pose.rect.height / 2 },
+          pose.rotation + delta,
+          transforms,
+        );
+        n.rotation = p.rotation;
+        // Single-node rotation keeps its layout rules and center; multi-rotation changes centers.
+        if (ids.length > 1) retainWorldRect(doc, n, p.rect);
+      }
+    });
+  }
+  getSelectionBox() {
+    const ids = this.state.selection;
+    if (ids.length === 1) {
+      const n = this.state.scene.nodes[ids[0]!]!;
+      const c = transformPoint(center(n.rect), n.transform ?? identity());
+      return {
+        rect: { ...n.rect, x: c.x - n.rect.width / 2, y: c.y - n.rect.height / 2 },
+        rotation: n.transform?.angle ?? 0,
+      };
+    }
+    const rect = this.getSelectionBounds();
+    return rect ? { rect, rotation: 0 } : null;
+  }
   getSelectionBounds() {
     return bounds(
       this.state.selection
-        .map((id) => this.state.scene.nodes[id]?.rect)
+        .map((id) => this.state.scene.nodes[id]?.bounds ?? this.state.scene.nodes[id]?.rect)
         .filter((r): r is Rect => !!r),
     );
   }

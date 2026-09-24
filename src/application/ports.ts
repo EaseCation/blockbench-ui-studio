@@ -1,5 +1,6 @@
 import type { Id, Pixels, Rect, ResolvedScene, SourceAsset, UiDocument } from '../domain/types';
 export interface NativeSnapshot {
+  rotation?: number;
   id: Id;
   rect: Rect;
   depth: number;

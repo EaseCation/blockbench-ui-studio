@@ -1,3 +1,4 @@
+import { center, rotateVector, worldRotation } from '../../domain/transform';
 import { BindingIndex } from './binding-index';
 import { contentProviders } from '../../application/content';
 import { hydrateContents, persistContents } from './content-carrier';
@@ -161,8 +162,12 @@ export class NativeHost implements HostPort {
       const mesh = this.element(doc.bindings[id]?.containerId ?? '')?.mesh;
       if (!mesh) continue;
       this.previewPositions.set(mesh, mesh.position.clone());
-      mesh.position.x += dx;
-      mesh.position.z += dy;
+      const local = rotateVector(
+        { x: dx, y: dy },
+        -worldRotation(doc, doc.nodes[id]?.parent ?? null),
+      );
+      mesh.position.x += local.x;
+      mesh.position.z += local.y;
       mesh.updateMatrixWorld(true);
     }
   }
@@ -278,7 +283,15 @@ export class NativeHost implements HostPort {
         let ancestor = e,
           unsupported: string | undefined;
         while (ancestor && ancestor !== 'root') {
-          if (ancestor.rotation?.some((v: number) => Math.abs(v) > 1e-6))
+          if (
+            ancestor.rotation?.some(
+              (v: number, i: number) =>
+                Math.abs(v) > 1e-6 &&
+                (i !== 1 ||
+                  !(ancestor instanceof this.bb.Group) ||
+                  (!ids.has(ancestor.uuid) && !doc.nodes[ancestor[SOURCE_MARKER]])),
+            )
+          )
             unsupported = '检测到三维旋转，二维规则已暂停';
           ancestor = ancestor.parent;
         }
@@ -291,7 +304,7 @@ export class NativeHost implements HostPort {
             surface.rotation?.some((v: number) => Math.abs(v) > 1e-6))
         )
           unsupported = '内容载体的三维几何已改变，二维规则已暂停';
-        if (image && (rect.width <= 0 || rect.height <= 0)) unsupported = '内容尺寸不适合二维布局';
+        if (image && (rect.width < 0 || rect.height < 0)) unsupported = '内容尺寸不适合二维布局';
         if (
           surface &&
           binding &&
@@ -299,7 +312,7 @@ export class NativeHost implements HostPort {
           (JSON.stringify(surface.faces.up.uv) !==
             JSON.stringify([0, 0, t?.uv_width, t?.uv_height]) ||
             (binding.textureId && binding.textureId !== t?.uuid) ||
-            surface.visibility !== e.visibility ||
+            surface.visibility !== (e.visibility !== false && rect.width > 0 && rect.height > 0) ||
             surface.locked !== e.locked)
         )
           unsupported = '内容载体的 UV、贴图或显示状态已独立修改，规则已暂停';
@@ -336,6 +349,7 @@ export class NativeHost implements HostPort {
             .filter((key) => surface?.[key] && !surface[key].inactive)
             .map((provider) => ({ provider, data: clone(surface[provider]) }))[0],
           kind: image ? 'image' : 'frame',
+          rotation: isCube ? 0 : (e.rotation?.[1] ?? 0),
           sourceId: e[SOURCE_MARKER] || undefined,
           rect,
           depth: surface?.to[1] ?? 0,
@@ -519,6 +533,13 @@ export class NativeHost implements HostPort {
       if (created || old?.parent !== n.parent || reordered) container.addTo(parent ?? 'root');
       container[SOURCE_MARKER] = id;
       container[ROLE_MARKER] = 'container';
+      const pivot = center(resolved.rect);
+      const recentered =
+        container.origin[0] !== pivot.x ||
+        container.origin[1] !== resolved.depth ||
+        container.origin[2] !== pivot.y;
+      container.origin = [pivot.x, resolved.depth, pivot.y];
+      container.rotation = [0, n.rotation ?? 0, 0];
       binding.groupOrigin = [...container.origin] as [number, number, number];
       changedGroups.push(container);
       if (n.kind === 'frame') continue;
@@ -537,7 +558,7 @@ export class NativeHost implements HostPort {
       if (element.parent !== container || container.children.indexOf(element) !== 0)
         element.addTo(container, 0);
       element.name = n.name + ' · 内容';
-      element.visibility = n.visible;
+      element.visibility = n.visible && resolved.rect.width > 0 && resolved.rect.height > 0;
       element.locked = n.locked;
       element[SOURCE_MARKER] = id;
       element[ROLE_MARKER] = 'content';
@@ -545,12 +566,14 @@ export class NativeHost implements HostPort {
       const changed =
         created ||
         newSurface ||
+        recentered ||
         !!bitmaps[id] ||
         !old ||
         JSON.stringify(old.rect) !== JSON.stringify(n.rect) ||
         old.visible !== n.visible ||
         old.locked !== n.locked ||
         old.name !== n.name ||
+        (old.rotation ?? 0) !== (n.rotation ?? 0) ||
         Math.abs(element.to[1] - resolved.depth) > 1e-6;
       if (!changed) continue;
       changedElements.push(element);
@@ -560,6 +583,7 @@ export class NativeHost implements HostPort {
         from: [r.x, depth, r.y],
         to: [r.x + r.width, depth, r.y + r.height],
         rotation: [0, 0, 0],
+        origin: [r.x + r.width / 2, depth, r.y + r.height / 2],
         box_uv: false,
         autouv: 0,
         shade: false,

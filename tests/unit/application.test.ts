@@ -157,6 +157,10 @@ describe('百分比位置拖动', () => {
     const { app } = fixture(),
       p = app.add('frame'),
       id = app.add('image', p);
+    app.update(p, (n) => {
+      n.layout.width = { kind: 'fixed', value: 160 };
+      n.layout.height = { kind: 'fixed', value: 90 };
+    });
     app.update(id, (n) => {
       n.layout.offsetPercent = { x: 0.5, y: 0 };
       n.layout.offset.x = -8;
@@ -398,4 +402,293 @@ it('编组事务提交失败时恢复逻辑文档和原选区', () => {
   expect(app.state.selection).toEqual(selection);
   expect(app.state.error).toBe('commit failed');
   expect(host.cancels).toBe(1);
+});
+
+it('旋转多选绕共同中心，不重烘焙，单次Undo；取消恢复角度', () => {
+  const { app, host } = fixture(),
+    a = app.add('image', null),
+    b = app.add('image', null);
+  app.update(b, (n) => {
+    n.layout.offset.x = 80;
+  });
+  app.select([a, b]);
+  const before = JSON.stringify(app.state.doc),
+    renders = host.renders,
+    commits = host.commits;
+  const r = app.getSelectionBounds()!,
+    pivot = { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  app.beginGesture('rotate');
+  app.rotateSelection(30, pivot);
+  app.rotateSelection(90, pivot);
+  app.endGesture(true);
+  expect(app.state.doc.nodes[a]!.rotation).toBe(90);
+  expect(app.state.doc.nodes[b]!.rotation).toBe(90);
+  expect(app.state.doc.nodes[a]!.rect.x).toBeCloseTo(app.state.doc.nodes[b]!.rect.x, 6);
+  expect(host.renders).toBe(renders);
+  expect(host.commits).toBe(commits + 1);
+  const rotated = JSON.stringify(app.state.doc);
+  app.beginGesture('rotate');
+  app.rotateSelection(-15, pivot);
+  app.endGesture(false);
+  expect(JSON.stringify(app.state.doc)).toBe(rotated);
+});
+
+it('旋转绘画图层沿本地右边扩展时，不移动原像素的画布原点', () => {
+  const { app } = fixture(),
+    id = app.add('image', null);
+  app.update(id, (n) => {
+    n.rotation = 90;
+  });
+  app.select([id]);
+  const original = app.getSelectionBox()!.rect,
+    content = app.state.doc.nodes[id]!.content;
+  expect(content?.kind).toBe('paint');
+  if (content?.kind !== 'paint') throw new Error('paint fixture');
+  const origin = { ...content.origin };
+  app.beginGesture('resize rotated paint');
+  app.transformSelection(original, {
+    ...original,
+    x: original.x - 5,
+    y: original.y - 5,
+    width: original.width + 10,
+  });
+  app.endGesture(true);
+  const updated = app.state.doc.nodes[id]!.content;
+  if (updated?.kind !== 'paint') throw new Error('paint fixture');
+  expect(updated.origin).toEqual(origin);
+});
+it('多个Stack流式子项保持布局约束，单个子项或整Frame仍可拖转', () => {
+  const { app } = fixture(),
+    frame = app.add('frame', null),
+    a = app.add('image', frame),
+    b = app.add('image', frame);
+  app.update(frame, (n) => {
+    n.frame!.direction = 'row';
+    n.frame!.engineType = 'stack_panel';
+  });
+  app.select([a, b]);
+  expect(app.rotationGestureAllowed()).toBe(false);
+  app.select([a]);
+  expect(app.rotationGestureAllowed()).toBe(true);
+  app.select([frame]);
+  expect(app.rotationGestureAllowed()).toBe(true);
+});
+
+it('精确居中允许半像素位置，移动预览不写文档，子元素跟随且不重烘焙', () => {
+  const { app, host } = fixture(),
+    root = app.add('frame', null),
+    child = app.add('image', root),
+    inside = app.add('image', child);
+  app.update(child, (n) => {
+    n.layout.width = { kind: 'fixed', value: 31 };
+  });
+  const before = JSON.stringify(app.state.doc),
+    x = app.state.doc.nodes[child]!.rect.x,
+    otherX = app.state.doc.nodes[inside]!.rect.x;
+  const renders = host.renders,
+    commits = host.commits;
+  app.select([child]);
+  app.beginGesture('snap', true);
+  app.previewMove(0.5, 0, true);
+  expect(JSON.stringify(app.state.doc)).toBe(before);
+  app.finishMove(0.5, 0, null, true);
+  expect(app.state.doc.nodes[child]!.rect.x).toBe(x + 0.5);
+  expect(app.state.doc.nodes[inside]!.rect.x).toBe(otherX + 0.5);
+  expect(host.renders).toBe(renders);
+  expect(host.commits).toBe(commits + 1);
+});
+
+it('居中锚点与百分比抵消偏移时，精确吸附仍保留半像素位置', () => {
+  const { app } = fixture(),
+    root = app.add('frame', null),
+    id = app.add('image', root);
+  app.update(root, (n) => {
+    n.layout.width = { kind: 'fixed', value: 100 };
+  });
+  app.update(id, (n) => {
+    n.layout.width = { kind: 'fixed', value: 31 };
+    n.layout.anchorFrom = [0.5, 0];
+    n.layout.anchorTo = [0.5, 0];
+    n.layout.offset = { x: 0, y: 10 };
+  });
+  const dx = 34.5 - app.state.doc.nodes[id]!.rect.x;
+  app.select([id]);
+  app.beginGesture('center', true);
+  app.finishMove(dx, 0, null, true);
+  expect(app.state.doc.nodes[id]!.rect.x).toBe(34.5);
+});
+
+it('普通移动保留default与受约束的相对尺寸公式，不重写像素项', () => {
+  const { app } = fixture(),
+    root = app.add('frame', null),
+    a = app.add('image', root),
+    b = app.add('image', root);
+  app.update(root, (n) => {
+    n.layout.width = { kind: 'fixed', value: 160 };
+    n.layout.height = { kind: 'fixed', value: 90 };
+  });
+  app.update(b, (n) => {
+    n.layout.width = { kind: 'fixed', value: 80 };
+  });
+  app.update(a, (n) => {
+    n.layout.width = { kind: 'expression', unit: '%sm', percent: 1, pixels: 8 };
+    n.layout.maxWidth = 60;
+    n.layout.height = { kind: 'default' };
+  });
+  const before = JSON.stringify([
+    app.state.doc.nodes[a]!.layout.width,
+    app.state.doc.nodes[a]!.layout.height,
+  ]);
+  app.select([a]);
+  app.beginGesture('move', true);
+  app.finishMove(10, 12, null);
+  expect(
+    JSON.stringify([app.state.doc.nodes[a]!.layout.width, app.state.doc.nodes[a]!.layout.height]),
+  ).toBe(before);
+  app.update(a, (n) => {
+    delete n.layout.maxWidth;
+  });
+  expect(app.state.doc.nodes[a]!.rect.width).toBe(88);
+});
+
+it('图片粘贴保留所选Image及子项、外观和几何，多张显式新建属于同一次事务', async () => {
+  const { app, host } = fixture(),
+    parent = app.add('image'),
+    child = app.add('image', parent);
+  app.update(parent, (n) => {
+    n.opacity = 0.5;
+    n.appearance = {
+      fill: 'solid',
+      color: '#ff0000ff',
+      endColor: '#ffffffff',
+      angle: 0,
+      strokeWidth: 2,
+      strokeColor: '#ffffffff',
+    };
+  });
+  app.select([parent]);
+  const before = clone(app.state.doc),
+    count = host.commits;
+  const pixels = { width: 8, height: 4, data: new Uint8ClampedArray(8 * 4 * 4).fill(255) };
+  expect(app.pasteImages([{ name: 'external', pixels }])).toBe(true);
+  expect(Object.keys(app.state.doc.nodes)).toEqual(Object.keys(before.nodes));
+  expect(app.state.doc.nodes[parent]!.children).toEqual([child]);
+  expect(app.state.doc.nodes[parent]!.layout).toEqual(before.nodes[parent]!.layout);
+  expect(app.state.doc.nodes[parent]!.appearance).toEqual(before.nodes[parent]!.appearance);
+  expect(app.state.doc.nodes[parent]!.opacity).toBe(0.5);
+  expect(host.commits).toBe(count + 1);
+  expect(
+    app.pasteImages([
+      { name: 'a', pixels },
+      { name: 'b', pixels },
+    ]),
+  ).toBe(true);
+  expect(app.state.doc.nodes[parent]!.children).toHaveLength(3);
+  expect(host.commits).toBe(count + 2);
+});
+it('样式快照独立、批量复制图片填充不改变层级和显示边界，像素源分别独立', async () => {
+  const { copyStyle } = await import('../../src/application/clipboard');
+  const { app, host } = fixture(),
+    source = app.add('image'),
+    one = app.add('image'),
+    two = app.add('image');
+  app.update(source, (n) => {
+    n.opacity = 0.4;
+    n.appearance = {
+      fill: 'linear',
+      color: '#ff0000ff',
+      endColor: '#0000ffff',
+      angle: 90,
+      strokeWidth: 2,
+      strokeColor: '#ffffffff',
+    };
+  });
+  app.update(one, (n) => {
+    n.layout.width = { kind: 'hug' };
+    n.layout.height = { kind: 'fixed', value: 20 };
+  });
+  app.update(two, (n) => {
+    n.layout.offset.x = 100;
+    n.layout.width = { kind: 'fixed', value: 60 };
+  });
+  const properties = copyStyle(app.state.doc, source),
+    before = clone(app.state.doc),
+    pixels = await app.images.decode(properties.fill!.png),
+    count = host.commits;
+  app.update(source, (n) => (n.opacity = 0.8));
+  expect(app.pasteProperties(properties, pixels, [one, two])).toBe(true);
+  for (const id of [one, two]) {
+    const n = app.state.doc.nodes[id]!;
+    expect(n.rect).toEqual(before.nodes[id]!.rect);
+    expect(n.opacity).toBe(0.4);
+    expect(n.name).toBe(before.nodes[id]!.name);
+    expect(n.parent).toBe(before.nodes[id]!.parent);
+  }
+  expect(app.state.doc.nodes[one]!.content!.source).not.toBe(
+    app.state.doc.nodes[two]!.content!.source,
+  );
+  expect(host.commits).toBe(count + 2);
+});
+it('异步图片解码期间改变选区会取消粘贴，不会填入另一Image', async () => {
+  const { app, host } = fixture(),
+    a = app.add('image'),
+    b = app.add('image');
+  let resolve!: (p: Pixels) => void;
+  app.images.decode = () => new Promise((r) => (resolve = r));
+  app.select([a]);
+  const before = clone(app.state.doc),
+    count = host.commits;
+  const pending = app.paste({ name: 'late', png: 'pending', width: 1, height: 1 });
+  app.select([b]);
+  resolve({ width: 1, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255]) });
+  await pending;
+  expect(app.state.doc).toEqual(before);
+  expect(host.commits).toBe(count);
+});
+it('多选前后排序为一次Undo且不烘焙，边界不产生空历史', () => {
+  const { app, host } = fixture(),
+    a = app.add('image'),
+    b = app.add('image'),
+    c = app.add('image');
+  app.select([a, b]);
+  const commits = host.commits,
+    renders = host.renders;
+  expect(app.reorderSelection('forward')).toBe(true);
+  expect(app.state.doc.roots).toEqual([c, a, b]);
+  expect(host.commits).toBe(commits + 1);
+  expect(host.renders).toBe(renders);
+  expect(app.reorderSelection('front')).toBe(false);
+  expect(host.commits).toBe(commits + 1);
+});
+
+it('普通新增和编组默认Auto；拖绘固定；移动子项只提交一次且不重烘焙', () => {
+  const { app, host } = fixture();
+  const frame = app.add('frame'),
+    a = app.add('image', frame),
+    b = app.add('image', frame);
+  expect(app.state.doc.nodes[frame]!.layout.width.kind).toBe('auto');
+  app.update(b, (n) => {
+    n.layout.offset.x = 64;
+  });
+  const before = clone(app.state.doc),
+    commits = host.commits,
+    renders = host.renders;
+  app.select([a]);
+  app.beginGesture('move', true);
+  app.finishMove(-30, -20, null);
+  expect(app.state.doc.nodes[b]!.rect).toEqual(before.nodes[b]!.rect);
+  expect(app.state.doc.nodes[a]!.rect.x).toBe(before.nodes[a]!.rect.x - 30);
+  expect(host.commits - commits).toBe(1);
+  expect(host.renders).toBe(renders);
+  expect(host.doc!.nodes[frame]!.layout.width.kind).toBe('auto');
+  expect(host.doc!.nodes[a]!.layout.offset).toEqual(app.state.doc.nodes[a]!.layout.offset);
+  const drawn = app.createDrawn({
+    kind: 'frame',
+    rect: { x: 200, y: 200, width: 100, height: 80 },
+    target: null,
+  })!;
+  expect(app.state.doc.nodes[drawn]!.layout.width).toEqual({ kind: 'fixed', value: 100 });
+  app.select([a, b]);
+  const group = app.groupSelection()!;
+  expect(app.state.doc.nodes[group]!.layout.width.kind).toBe('auto');
 });

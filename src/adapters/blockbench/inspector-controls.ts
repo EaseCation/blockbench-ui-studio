@@ -37,6 +37,7 @@ export function input(
     hint?: string;
     disabled?: () => boolean;
     step?: (value: string, delta: number) => string;
+    validate?: (value: string) => void;
   } = {},
 ) {
   const node = el('input', 'focusable_input mcui-inspector-input');
@@ -64,18 +65,20 @@ export function input(
     node.value = committed;
     node.placeholder = value === undefined ? '混合' : '';
     node.removeAttribute('aria-invalid');
+    node.title = options.hint ?? label;
   };
   const commit = () => {
     if (!dirty) return;
-    if (key !== ctx.key() || !ctx.enabled()) {
+    if (key !== ctx.key() || !ctx.enabled() || node.disabled || options.disabled?.()) {
       dirty = false;
       refresh();
       return;
     }
-    if (node.value === committed) {
+    if (node.value === committed && read() !== undefined) {
       dirty = false;
       return;
     }
+    const attempted = node.value;
     try {
       if (options.number && (node.value.trim() === '' || !Number.isFinite(Number(node.value))))
         throw new Error(`${label}需要有效数值`);
@@ -87,6 +90,8 @@ export function input(
       refresh();
     } catch (error) {
       dirty = true;
+      node.value = attempted;
+      node.title = error instanceof Error ? error.message : String(error);
       node.setAttribute('aria-invalid', 'true');
       ctx.report(error);
     }
@@ -97,6 +102,13 @@ export function input(
   node.oninput = () => {
     dirty = true;
     node.removeAttribute('aria-invalid');
+    try {
+      options.validate?.(node.value);
+      node.title = options.hint ?? label;
+    } catch (error) {
+      node.setAttribute('aria-invalid', 'true');
+      node.title = error instanceof Error ? error.message : String(error);
+    }
   };
   node.onchange = commit;
   node.onblur = commit;
@@ -174,6 +186,7 @@ export function select(
   }
   node.onchange = () => {
     try {
+      if (!ctx.enabled() || node.disabled || !node.value || unavailable?.(node.value)) return;
       write(node.value);
     } catch (error) {
       ctx.report(error);
@@ -265,7 +278,8 @@ export function color(
     last = '',
     initial: string | undefined,
     shown = '',
-    cancelling = false;
+    cancelling = false,
+    confirmed = false;
   const cancel = () => {
     cancelling = true;
     picker.hide();
@@ -287,8 +301,19 @@ export function color(
     opened = true;
     key = ctx.key();
     initial = read();
+    confirmed = false;
     shown = picker.get().toHex8String();
   });
+  const confirmClick = (event: MouseEvent) => {
+    if (
+      opened &&
+      event.target instanceof Element &&
+      event.target.closest('.sp-choose') &&
+      picker.jq.spectrum('container')[0]?.contains(event.target)
+    )
+      confirmed = true;
+  };
+  document.addEventListener('click', confirmClick, true);
   // Blockbench's Spectrum emits change while typing AND on close. Commit only the final color.
   picker.onChange = () => {};
   picker.jq.on('hide.spectrum', () => {
@@ -296,7 +321,13 @@ export function color(
     opened = false;
     const next = picker.get().toHex8String();
     try {
-      if (!cancelling && ctx.enabled() && key === ctx.key() && read() === initial && next !== shown)
+      if (
+        !cancelling &&
+        ctx.enabled() &&
+        key === ctx.key() &&
+        read() === initial &&
+        (next !== shown || (initial === undefined && confirmed))
+      )
         write(next);
     } catch (error) {
       ctx.report(error);
@@ -309,6 +340,8 @@ export function color(
     const value = read();
     text.textContent = value === undefined ? '混合' : value.toUpperCase();
     root.style.pointerEvents = ctx.enabled() ? '' : 'none';
+    root.classList.toggle('mcui-color-mixed', value === undefined);
+    root.setAttribute('aria-disabled', String(!ctx.enabled()));
     root.setAttribute('aria-label', label + '：' + text.textContent);
     if (!opened && (last !== value || key !== ctx.key())) {
       picker.set(value ?? '#ffffffff');
@@ -319,6 +352,7 @@ export function color(
   ctx.cleanup.push(() => {
     cancel();
     document.removeEventListener('keydown', escape, true);
+    document.removeEventListener('click', confirmClick, true);
     keys.delete();
     picker.delete();
   });

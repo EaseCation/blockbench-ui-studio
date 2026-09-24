@@ -29,8 +29,8 @@ export function inspect(doc: UiDocument, nodes: UiNode[]) {
     const l = n.layout;
     return (
       [
-        l.minWidth !== 1 ? `W ≥ ${l.minWidth}` : '',
-        l.minHeight !== 1 ? `H ≥ ${l.minHeight}` : '',
+        l.minWidth !== 0 ? `W ≥ ${l.minWidth}` : '',
+        l.minHeight !== 0 ? `H ≥ ${l.minHeight}` : '',
         l.maxWidth !== undefined ? `W ≤ ${l.maxWidth}` : '',
         l.maxHeight !== undefined ? `H ≤ ${l.maxHeight}` : '',
       ]
@@ -111,4 +111,39 @@ export function editCompound(n: UiNode, key: string, value: unknown): boolean {
     }
   } else return false;
   return true;
+}
+
+/** Shared selection contract for every property presentation and write entry point. */
+export interface InspectorProperty {
+  read(node: UiNode): unknown;
+  applies?(node: UiNode, doc: UiDocument): boolean;
+  disabled?(node: UiNode, doc: UiDocument): string | undefined;
+  readonly?: boolean;
+  dimensions?: number;
+}
+export function inspectProperty(doc: UiDocument, nodes: UiNode[], field: InspectorProperty) {
+  const available = nodes.length > 0 && nodes.every((n) => !field.applies || field.applies(n, doc));
+  const values = available ? nodes.map((n) => field.read(n)) : [];
+  const mixed = values.some((value) => JSON.stringify(value) !== JSON.stringify(values[0]));
+  const reason = !available
+    ? '此属性不适用于整个选区'
+    : nodes.map((n) => n.suspended || field.disabled?.(n, doc)).find(Boolean);
+  return {
+    available,
+    editable: available && !field.readonly && !reason,
+    reason,
+    mixed,
+    value: available && !mixed ? values[0] : undefined,
+    axes: Array.from({ length: field.dimensions ?? 0 }, (_, i) =>
+      common(values.map((value) => (Array.isArray(value) ? value[i] : undefined))),
+    ),
+  };
+}
+export function flowControlled(doc: UiDocument, node: UiNode) {
+  const parent = node.parent ? doc.nodes[node.parent] : undefined;
+  return (
+    node.layout.positioning === 'flow' &&
+    parent?.kind === 'frame' &&
+    parent.frame?.direction !== 'free'
+  );
 }

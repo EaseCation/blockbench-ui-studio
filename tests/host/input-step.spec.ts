@@ -77,11 +77,11 @@ for (const panel of ['element', 'mcui_layout']) {
     await expect(width).toHaveValue('100% -');
     expect(await page.evaluate(() => window.Undo.history.length)).toBe(before);
     await width.press('Escape');
-    await width.fill('1px');
+    await width.fill('0px');
     await width.press('Enter');
     const min = await page.evaluate(() => window.Undo.history.length);
     await width.press('ArrowDown');
-    await expect(width).toHaveValue('1px');
+    await expect(width).toHaveValue('0px');
     expect(await page.evaluate(() => window.Undo.history.length)).toBe(min);
     await width.fill('fill');
     await width.press('Enter');
@@ -128,7 +128,7 @@ test('尺寸限制、间距、内边距和内容数值统一使用方向键', as
   await page.locator('details[data-disclosure=limits] summary').click();
   const min = page.getByLabel('最小宽度', { exact: true });
   await min.press('ArrowUp');
-  await expect(min).toHaveValue('2');
+  await expect(min).toHaveValue('1');
   const max = page.getByLabel('最大宽度', { exact: true });
   await max.fill('80');
   await max.press('Enter');

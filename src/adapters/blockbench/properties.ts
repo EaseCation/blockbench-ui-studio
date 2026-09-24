@@ -1,7 +1,9 @@
 import { BindingIndex } from './binding-index';
-import { fields as all, type Field } from './property-fields';
+import { fields as all, fieldState, writeField, type Field } from './property-fields';
+import { input as inspectorInput, type ControlContext } from './inspector-controls';
+import { inspectProperty } from '../../application/inspector';
 import { InspectorPanels } from './inspector-panels';
-import { stepExpression } from '../../domain/expression';
+import { stepExpression, parseSize } from '../../domain/expression';
 import { inputStep } from './input-step';
 import { bindScrub, scrubLabel, cancelScrubs } from './input-scrub';
 import type { Studio } from '../../application/studio';
@@ -11,8 +13,10 @@ import { FIELD_PREFIX, ROLE_MARKER, SOURCE_MARKER } from './native-fields';
 import { Disposables, type HostObject, type HostRuntime } from './runtime';
 
 type Section = 'element' | 'layout' | 'content';
+const selectionSummary = (count: number) => `已选 ${count} 项 · 批量修改`;
 function section(field: Field): Section {
-  if (['status', 'offset', 'size', 'selection_info'].includes(field.id)) return 'element';
+  if (['status', 'offset', 'size', 'rotation', 'selection_info'].includes(field.id))
+    return 'element';
   return /^(paint_|image_|nine_|style_|only_downscale)/.test(field.id) ? 'content' : 'layout';
 }
 /** Declarative native fields; draft text is the only custom input behavior. */
@@ -57,7 +61,8 @@ export class PropertyBridge {
         label: 'UI 多选',
         type: 'text',
         readonly: true,
-        read: () => `已选择 ${this.targets().length} 个对象；显示首个值，修改统一应用`,
+        read: () => selectionSummary(this.targets().length),
+        description: '相同值显示，混合值留空。输入仅修改当前字段或轴，一次撤销还原整个选区。',
         applies: () => this.targets().length > 1,
       });
     }
@@ -89,13 +94,10 @@ export class PropertyBridge {
         id && app.state.doc.bindings[id]?.containerId === node.uuid
           ? app.state.doc.nodes[id]
           : undefined;
-      return !!n && (!field.applies || field.applies(n));
+      return !!n && (!field.applies || field.applies(n, app.state.doc));
     }
     const targets = this.targets();
-    return (
-      targets.length > 0 &&
-      targets.every((n) => type === 'group' && (!field.applies || field.applies(n)))
-    );
+    return type === 'group' && inspectProperty(this.current()!.state.doc, targets, field).available;
   }
   private register(type: string, ctor: HostObject, field: Field) {
     this.life.add(
@@ -108,7 +110,7 @@ export class PropertyBridge {
                 element_panel: {
                   input: {
                     label: field.label,
-                    type: field.type,
+                    type: field.type === 'number' ? 'mcui_scalar' : field.type,
                     readonly: field.readonly,
                     options: field.options,
                     dimensions: field.dimensions,
@@ -131,10 +133,7 @@ export class PropertyBridge {
                       )
                       .filter((id): id is string => !!id);
                     app.executeWithinHostEdit(field.label, (doc) => {
-                      for (const id of ids) {
-                        const n = doc.nodes[id]!;
-                        if (!field.applies || field.applies(n)) field.write!(n, value, doc);
-                      }
+                      writeField(doc, topSelection(doc, ids), field.id, value);
                     });
                     this.hydrate(app.state.doc);
                     this.refresh(false);
@@ -147,7 +146,7 @@ export class PropertyBridge {
   }
   hydrate(doc: UiDocument) {
     if (this.disposed) return;
-    const selectionInfo = `已选择 ${this.targets().length} 个对象；显示首个值，修改统一应用`;
+    const selectionInfo = selectionSummary(this.targets().length);
     const objects = new Map<string, HostObject>(
       [...(this.bb.Project?.elements ?? []), ...(this.bb.Project?.groups ?? [])].map(
         (e: HostObject) => [e.uuid, e],
@@ -186,15 +185,12 @@ export class PropertyBridge {
           .join('|');
       const panel = this.bb.Interface.Panels.element;
       const values: Record<string, unknown> = {};
-      for (const n of targets) {
-        const type = 'group';
-        for (const f of all) {
-          const id = `${type}__${FIELD_PREFIX}${f.id}`;
-          if (!(id in values)) values[id] = f.read(n) ?? '';
-        }
-        values[`${type}__${FIELD_PREFIX}selection_info`] =
-          `已选择 ${targets.length} 个对象；显示首个值，修改统一应用`;
+      for (const field of all) {
+        const state = fieldState(app.state.doc, targets, field.id);
+        values[`group__${FIELD_PREFIX}${field.id}`] =
+          field.type === 'mcui_pair' ? state.axes.map((value) => value ?? '') : (state.value ?? '');
       }
+      values[`group__${FIELD_PREFIX}selection_info`] = selectionSummary(targets.length);
       panel.form.setValues(values);
       this.inspector.refresh();
       const tabsKey = targets.map((n) => `${n.id}:${n.kind}:${n.content?.kind ?? ''}`).join('|');
@@ -220,8 +216,23 @@ export class PropertyBridge {
     if (!field?.write || !app) throw new Error('当前选区不可编辑');
     const ids = this.targets().map((n) => n.id);
     app.validateChange((doc) => {
-      for (const id of ids) field.write!(doc.nodes[id]!, value, doc);
+      writeField(doc, ids, field.id, value);
     });
+  }
+  private stateFor(formId: string) {
+    const field = all.find(
+      (f) => formId === FIELD_PREFIX + f.id || formId.endsWith('__' + FIELD_PREFIX + f.id),
+    );
+    const app = this.current();
+    return field && app ? fieldState(app.state.doc, this.targets(), field.id) : undefined;
+  }
+  private editable(formId: string) {
+    return (
+      !this.disposed &&
+      !!this.bb.Modes.edit &&
+      !!this.stateFor(formId)?.editable &&
+      !this.current()?.state.busy
+    );
   }
   private registerDraft() {
     const bridge = this,
@@ -232,11 +243,15 @@ export class PropertyBridge {
       dirty = false;
       selection = '';
       key() {
-        return bridge
-          .targets()
-          .map((n) => n.id)
-          .sort()
-          .join('|');
+        return (
+          bridge.current()?.state.doc.id +
+          ':' +
+          bridge
+            .targets()
+            .map((n) => n.id)
+            .sort()
+            .join('|')
+        );
       }
       build(bar: HTMLElement) {
         super.build(bar);
@@ -267,7 +282,7 @@ export class PropertyBridge {
       }
       commit() {
         if (!this.dirty) return;
-        if (this.selection !== this.key()) {
+        if (this.selection !== this.key() || !bridge.editable(this.id)) {
           this.dirty = false;
           this.input.value = this.committed;
           return;
@@ -303,11 +318,15 @@ export class PropertyBridge {
       dirty = false;
       selection = '';
       key() {
-        return bridge
-          .targets()
-          .map((n) => n.id)
-          .sort()
-          .join('|');
+        return (
+          bridge.current()?.state.doc.id +
+          ':' +
+          bridge
+            .targets()
+            .map((n) => n.id)
+            .sort()
+            .join('|')
+        );
       }
       build(bar: HTMLElement) {
         bridge.bb.FormElement.prototype.build.call(this, bar);
@@ -346,11 +365,12 @@ export class PropertyBridge {
           this.inputs.push(input);
           const kind = axis === 'w' || axis === 'h' ? 'size' : 'offset';
           const field = all.find((f) => this.id.endsWith('__' + FIELD_PREFIX + f.id))!;
+          input.dataset.mcuiHint = field.description ?? axis.toUpperCase();
+          input.title = input.dataset.mcuiHint ?? '';
           this.scrubCleanup.push(
             bindScrub(input, {
               key: () => bridge.current()?.state.doc.id + ':' + this.key(),
-              enabled: () =>
-                !!bridge.current() && !bridge.current()?.state.busy && !!bridge.bb.Modes.edit,
+              enabled: () => bridge.editable(this.id),
               step: (value, delta) => stepExpression(value, delta, kind),
               report: (error) =>
                 bridge.bb.Blockbench.showQuickMessage(
@@ -370,7 +390,7 @@ export class PropertyBridge {
                       const values: any = [0, 0];
                       values[index] = value;
                       values.changedAxis = index;
-                      for (const id of ids) field.write!(doc.nodes[id]!, values, doc);
+                      writeField(doc, ids, field.id, values);
                     }) === true,
                   finish: (commit) => {
                     app.endGesture(commit);
@@ -387,6 +407,14 @@ export class PropertyBridge {
           input.oninput = () => {
             this.dirty = true;
             input.removeAttribute('aria-invalid');
+            input.title = input.dataset.mcuiHint ?? '';
+            if (kind === 'size')
+              try {
+                parseSize(input.value);
+              } catch (error) {
+                input.setAttribute('aria-invalid', 'true');
+                input.title = error instanceof Error ? error.message : String(error);
+              }
           };
           input.onchange = () => this.commit();
           input.onblur = () => this.commit();
@@ -431,7 +459,7 @@ export class PropertyBridge {
       }
       commit(axis?: number) {
         if (!this.dirty) return;
-        if (this.selection !== this.key()) {
+        if (this.selection !== this.key() || !bridge.editable(this.id)) {
           this.dirty = false;
           this.setValue(this.committed);
           return;
@@ -442,6 +470,10 @@ export class PropertyBridge {
         const changed = values
           .map((v, i) => (v !== this.committed[i] ? i : -1))
           .filter((i) => i >= 0);
+        if (!changed.length) {
+          this.dirty = false;
+          return;
+        }
         values.changedAxis = axis ?? (changed.length === 1 ? changed[0] : undefined);
         try {
           bridge.validate(this.id, values);
@@ -452,11 +484,12 @@ export class PropertyBridge {
           const field = all.find((f) => this.id.endsWith('__' + FIELD_PREFIX + f.id))!;
           const ids = bridge.targets().map((n) => n.id);
           app.execute(field.label, (doc) => {
-            for (const id of ids) field.write!(doc.nodes[id]!, values, doc);
+            writeField(doc, ids, field.id, values);
           });
           bridge.refresh(false);
         } catch (error) {
-          for (const i of this.inputs) i.setAttribute('aria-invalid', 'true');
+          for (const index of changed.length ? changed : [0, 1])
+            this.inputs[index]?.setAttribute('aria-invalid', 'true');
           bridge.bb.Blockbench.showQuickMessage(
             error instanceof Error ? error.message : String(error),
             4500,
@@ -476,13 +509,89 @@ export class PropertyBridge {
         if (this.dirty && this.selection === this.key()) return;
         this.dirty = false;
         this.changedAxis = undefined;
-        this.committed = Array.isArray(values) ? values.map(String) : ['0px', '0px'];
+        const state = bridge.stateFor(this.id);
+        this.committed = (state?.axes ?? [undefined, undefined]).map((v) =>
+          v === undefined ? '' : String(v),
+        );
         this.inputs.forEach((input, i) => {
-          input.value = this.committed[i] ?? '0px';
+          input.value = this.committed[i] ?? '';
+          input.placeholder = state?.available && state.axes[i] === undefined ? '混合' : '';
+          input.disabled = !state?.editable;
           input.removeAttribute('aria-invalid');
+          input.title = state?.reason ?? input.dataset.mcuiHint ?? '';
         });
       }
     }
+    class Scalar extends bridge.bb.FormElement {
+      updates: (() => void)[] = [];
+      cleanup: (() => void)[] = [];
+      input!: HTMLInputElement;
+      scrubApp?: Studio;
+      build(bar: HTMLElement) {
+        super.build(bar);
+        const field = all.find((f) => this.id.endsWith('__' + FIELD_PREFIX + f.id))!;
+        const context: ControlContext = {
+          key: () =>
+            bridge.current()?.state.doc.id +
+            ':' +
+            bridge
+              .targets()
+              .map((n) => n.id)
+              .sort()
+              .join('|'),
+          enabled: () => bridge.editable(this.id),
+          update: this.updates,
+          cleanup: this.cleanup,
+          report: (e) =>
+            bridge.bb.Blockbench.showQuickMessage(String(e instanceof Error ? e.message : e), 4500),
+          beginScrub: () => {
+            const app = bridge.current()!;
+            app.beginGesture('拖动调整 UI 数值');
+            this.scrubApp = app;
+            return (commit) => {
+              this.scrubApp = undefined;
+              app.endGesture(commit);
+              bridge.refresh(false);
+            };
+          },
+        };
+        this.input = inspectorInput(
+          context,
+          field.label,
+          () => bridge.stateFor(this.id)?.value as number | undefined,
+          (v) => {
+            const app = bridge.current()!,
+              ids = bridge.targets().map((n) => n.id);
+            const change = (doc: UiDocument) => writeField(doc, ids, field.id, Number(v));
+            app.validateChange(change);
+            const ok =
+              this.scrubApp === app ? app.previewGesture(change) : app.execute(field.label, change);
+            if (!ok) throw new Error(app.state.error ?? '修改失败');
+            bridge.refresh(false);
+          },
+          { number: true, min: field.min, hint: field.description },
+        );
+        bar.append(this.input);
+        const label = bar.querySelector<HTMLElement>('label.name_space_left');
+        if (label) scrubLabel(this.input, label);
+      }
+      setValue() {
+        for (const update of this.updates) update();
+      }
+      getValue() {
+        return bridge.stateFor(this.id)?.value;
+      }
+      delete() {
+        for (const dispose of this.cleanup.splice(0).reverse()) dispose();
+        super.delete();
+      }
+    }
+    const previousScalar = this.bb.FormElement.types.mcui_scalar;
+    this.bb.FormElement.registerType('mcui_scalar', Scalar);
+    this.life.add(() => {
+      if (previousScalar) this.bb.FormElement.types.mcui_scalar = previousScalar;
+      else delete this.bb.FormElement.types.mcui_scalar;
+    });
     const previousPosition = this.bb.FormElement.types.mcui_pair;
     this.bb.FormElement.registerType('mcui_pair', PairDraft);
     this.life.add(() => {

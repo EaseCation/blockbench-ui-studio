@@ -13,7 +13,9 @@ async function start(page: Page, text = false, plugin = true) {
   await page.route(/https:\/\/(cdn.jsdelivr.net|blckbn.ch).*plugins.*json/, (r) =>
     r.fulfill({ json: {} }),
   );
-  await page.goto(`http://127.0.0.1:${process.env.MCUI_HOST_PORT ?? '4178'}`);
+  await page.goto(`http://127.0.0.1:${process.env.MCUI_HOST_PORT ?? '4178'}`, {
+    waitUntil: 'domcontentloaded',
+  });
   await page.waitForFunction(() => !!window.Blockbench?.setup_successful);
   if (plugin) {
     await page.evaluate(() => {
@@ -117,6 +119,8 @@ async function fixture(page: Page, text = false) {
     w.Undo.finishEdit('Paint fixture');
     a.select([]);
     w.Blockbench.mcuiStudio.getViewport().automaticPlacement = false;
+    // This regression checks exact pointer deltas; smart alignment is covered in snapping.spec.ts.
+    w.Blockbench.mcuiStudio.getViewport().setSmartSnapping(false);
     w.Blockbench.mcuiStudio.getViewport().fit();
     await Promise.all(w.Texture.all.map((t: any) => t.img.decode()));
     return { root, frame, nested, paint, parent, child, image, nine, label };

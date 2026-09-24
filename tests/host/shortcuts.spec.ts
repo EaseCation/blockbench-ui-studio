@@ -188,3 +188,89 @@ test('颜色弹层和未完成的绘制手势不执行自动布局或视图快�
   await page.mouse.up();
   expect((await snap(page)).doc).toEqual(drafting.doc);
 });
+
+test('Enter / Shift+Enter 按逻辑层级批量导航，合并父级，叶子与根级不误触原版', async ({ page }) => {
+  const ids = await start(page);
+  const tree = await page.evaluate(({ root, a, b }) => {
+    const app = window.Blockbench.mcuiStudio.getStudio();
+    const frame = app.add('frame', root),
+      child = app.add('image', frame),
+      nested = app.add('image', a);
+    const hidden = app.add('image', root),
+      locked = app.add('image', root);
+    app.update(hidden, (n: any) => {
+      n.visible = false;
+    });
+    app.update(locked, (n: any) => {
+      n.locked = true;
+    });
+    app.select([root]);
+    (window as any).Prop.active_panel = 'preview';
+    return { frame, child, nested, hidden, locked, a, b, root };
+  }, ids);
+  const before = await snap(page);
+  await page.keyboard.press('Enter');
+  expect((await snap(page)).selection).toEqual([ids.a, ids.b, tree.frame]);
+  await page.keyboard.press('Enter');
+  expect((await snap(page)).selection).toEqual([tree.nested, ids.b, tree.child]);
+  await page.keyboard.press('Shift+Enter');
+  expect((await snap(page)).selection).toEqual([ids.root]);
+  await page.keyboard.press('Shift+Enter');
+  expect((await snap(page)).selection).toEqual([ids.root]);
+  const after = await snap(page);
+  expect(after.doc).toEqual(before.doc);
+  expect(after.undo).toBe(before.undo);
+  await page.evaluate(
+    ({ nested }) => window.Blockbench.mcuiStudio.getStudio().select([nested]),
+    tree,
+  );
+  await page.keyboard.press('Enter');
+  expect((await snap(page)).selection).toEqual([tree.nested]);
+  expect(await page.evaluate(() => (window as any).Modes.selected.id)).toBe('edit');
+  await page.evaluate(() => window.BarItems.mcui_select_children.keybind.set({ key: 74 }));
+  await page.evaluate(({ root }) => window.Blockbench.mcuiStudio.getStudio().select([root]), ids);
+  await page.keyboard.press('j');
+  expect((await snap(page)).selection).toEqual([ids.a, ids.b, tree.frame]);
+});
+
+test('层级导航保护输入焦点、弹窗、原生/透视模式、空选区，卸载移除键位', async ({ page }) => {
+  const ids = await start(page);
+  await page.evaluate(({ root }) => window.Blockbench.mcuiStudio.getStudio().select([root]), ids);
+  const input = page.locator('#panel_element input[aria-label="UI 宽度"]');
+  await input.focus();
+  await page.keyboard.press('Enter');
+  expect((await snap(page)).selection).toEqual([ids.root]);
+  await input.blur();
+  await page.evaluate(() =>
+    new (window as any).Dialog({ id: 'navigation_guard', title: 'test', lines: ['test'] }).show(),
+  );
+  await page.keyboard.press('Shift+Enter');
+  expect((await snap(page)).selection).toEqual([ids.root]);
+  await page.evaluate(() => (window as any).Dialog.open?.cancel());
+  for (const mode of ['native', '3d']) {
+    await page.evaluate((mode) => {
+      const v = window.Blockbench.mcuiStudio.getViewport();
+      if (mode === 'native') v.setInteraction('native');
+      else {
+        v.setInteraction('figma');
+        v.setView('3d');
+      }
+    }, mode);
+    await page.keyboard.press('Enter');
+    expect((await snap(page)).selection).toEqual([ids.root]);
+  }
+  await page.evaluate(() => {
+    window.Blockbench.mcuiStudio.getViewport().setView('2d');
+    window.Blockbench.mcuiStudio.getStudio().select([]);
+    (window as any).Prop.active_panel = 'preview';
+  });
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Shift+Enter');
+  expect((await snap(page)).selection).toEqual([]);
+  await page.evaluate(() => window.Plugins.registered.mcui_studio.onunload());
+  expect(
+    await page.evaluate(
+      () => !!window.BarItems.mcui_select_children || !!window.BarItems.mcui_select_parent,
+    ),
+  ).toBe(false);
+});

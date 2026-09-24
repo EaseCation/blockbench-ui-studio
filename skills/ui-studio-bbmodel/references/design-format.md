@@ -4,20 +4,21 @@
 
 ## 节点
 
-| 字段                  | 内容与默认值                                                          |
-| --------------------- | --------------------------------------------------------------------- |
-| id                    | 必需，文件内唯一的稳定逻辑字符串 ID；不要在小改动时重新命名           |
-| kind                  | 必需，`frame` 或 `image`                                              |
-| name                  | 显示名称，默认 id                                                     |
-| x/y                   | 数字或像素/百分比表达式，默认 0；是相对父锚点的偏移，不是世界坐标     |
-| width/height          | 数字、`32px`、`100% - 16px`、`fill`、`hug`；默认 32                   |
-| positioning           | `flow`（默认）或 `absolute`；绝对子项不参与 Stack 和 Frame Hug        |
-| anchorFrom / anchorTo | 父锚点/自身锚点，两个 0..1 数，默认 `[0,0]`；居中用两者都 `[0.5,0.5]` |
-| minWidth/minHeight    | 默认 1，UI px                                                         |
-| maxWidth/maxHeight    | 可省略，UI px                                                         |
-| visible / locked      | 默认 true / false                                                     |
-| opacity               | 默认 1，范围 0..1                                                     |
-| children              | 逻辑子节点数组，不包含 Image 内部内容 Cube                            |
+| 字段                  | 内容与默认值                                                                                  |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| id                    | 必需，文件内唯一的稳定逻辑字符串 ID；不要在小改动时重新命名                                   |
+| kind                  | 必需，`frame` 或 `image`                                                                      |
+| name                  | 显示名称，默认 id                                                                             |
+| x/y                   | 数字或像素/百分比表达式，默认 0；是相对父锚点的偏移，不是世界坐标                             |
+| width/height          | 数字、px/百分比参照加减公式、`fill`、`default`、`hug`、`auto`；Image 默认 32，Frame 默认 auto |
+| positioning           | `flow`（默认）或 `absolute`；绝对子项不参与 Stack 和 Frame Hug                                |
+| anchorFrom / anchorTo | 父锚点/自身锚点，两个 0..1 数，默认 `[0,0]`；居中用两者都 `[0.5,0.5]`                         |
+| minWidth/minHeight    | 默认 0，UI px                                                                                 |
+| maxWidth/maxHeight    | 可省略，UI px                                                                                 |
+| visible / locked      | 默认 true / false                                                                             |
+| opacity               | 默认 1，范围 0..1                                                                             |
+| rotation              | 默认 0；角度，正数逆时针、负数顺时针，相对父级，自动归一到 -180..180                          |
+| children              | 逻辑子节点数组，不包含 Image 内部内容 Cube                                                    |
 
 `x="50% - 8px"` 与中心父锚点不是同一件事：锚点和百分比偏移会相加。需要中心定位时通常把两个锚点设为中心、x/y 为 0。根节点不能依赖父级百分比或 Fill。
 
@@ -116,3 +117,27 @@ PNG 文件相对设计描述路径解析。像素 rows 的行数与字符数必�
 ## 可编辑文字
 
 顶层可增加 `fonts` 数组，Image 的 `content.kind="text"`。加载 `--text-plugin` 后 extract 输出完整文字参数，build 通过实际 provider 更新。字号倍率、字体文件与换行规则见 [text-content.md](text-content.md)。不要将字体字号直接填入 `font_size`，也不要把已有的文字权威参数写到 UI document.content.data 后直接保存。
+
+## 二维旋转
+
+`rotation` 同时适用于 Image 和 Frame，绕自身 W/H 矩形的中心旋转，子项继承父级旋转。坐标、百分比、Stack 占位与宽高始终使用旋转前的父级局部布局；旋转只改变显示几何，不将外接矩形当作新的贴图尺寸，也不重采样贴图。原生 Group.rotation.y 保存角度，Group 与内容 Cube 的 origin 由工具居中生成，内容 Cube 自身的 rotation 仍为零。不要手工改 Cube.rotation 来表达 UI 旋转。
+
+例如 `{ "id":"badge", "kind":"image", "x":20, "y":10, "width":32, "height":16, "rotation":-15 }` 表示相对父级顺时针转 15°。PNG 预览已应用完整父子旋转。仍不支持 UI 平面之外的 X/Z 倾斜。
+
+精确定位的提取结果可能包含 `subpixel: true`，用于保留吸附得到的半像素位置（包括与居中锚点、百分比结合的情形）。编辑已有设计时保留此字段；它不提高贴图分辨率，也不改变 Stack 的共享边界分配。
+
+## 尺寸参照与组合
+
+W/H 支持 `px`、父级同轴 `%`、直接子项合计 `%c`、最大可见直接子项 `%cm`、最大其他同级 `%sm`、自身宽 `%x`、自身高 `%y`，以及 `default`（父级 100%）、`fill`。保留 `hug` 插件扩展。示例：`100%cm + 8px`，W=`200%y` 配合 H=40。多个参照可相加，例如 `50% + 25%y - 8px`，这属于插件扩展公式，不保证原游戏解析器跨版本支持。
+
+`%c/%cm` 不包含插件 gap/padding 或子项位置偏移；Image 内部原生内容 Cube 不参与统计。`%c/%sm` 保留隐藏项尺寸，`%cm` 排除隐藏子项。不能构成自身/父子/同级尺寸循环。`$变量`、Molang、括号和乘除不是此静态表达式格式。坐标 x/y 仍只接受父级百分比＋像素。
+
+允许逻辑尺寸 0，内容 Cube 不显示，源图仍保留。旧文件 minWidth/minHeight=1 是已有约束，若需要折叠到 0 应明确设置对应最小值为 0。正尺寸恢复后继续渲染，绝不生成 0×N 的非法 PNG。
+
+## Frame 自动边界
+
+Frame 的 `width` / `height` 可以逐轴设为 `auto`，自由布局时跟随可见直接子项的完整边界（包括绝对子项、负坐标和旋转），Stack 时按流式排列内容、gap、padding 计算。空 Frame 保留其已解析尺寸。`hug` 的固定起点内容测量仍独立保留；Image 不支持 `auto`。
+
+画板作为百分比参照时显式填写固定 W/H。Auto 轴不能与子项父级百分比尺寸、default 或 fill 构成循环；需要百分比宽度时将对应父轴固定。百分比坐标仍可使用，布局会保留百分比分量、重算像素偏移与中心，使其它子项不跳位。编辑器编组/换父级时会把依赖新 Auto 父级的子项尺寸固定为当前像素值。
+
+不要只写入解析后的 rect：必须同时应用 `applyResolvedLayout` 返回的原点重定位结果。配套 build 脚本已处理此步骤；base 更新使用原文档 rect 作为自动尺寸的历史参照。已有固定尺寸不会被读取过程改为自动。

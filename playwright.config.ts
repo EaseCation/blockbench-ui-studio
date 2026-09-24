@@ -7,7 +7,12 @@ export default defineConfig({
     channel: 'chrome',
     headless: true,
     viewport: { width: 1440, height: 1000 },
-    launchOptions: { args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] },
+    launchOptions: {
+      args: [
+        `--use-angle=${process.env.BLOCKBENCH_TEST_ANGLE ?? 'swiftshader'}`,
+        '--enable-unsafe-swiftshader',
+      ],
+    },
     trace: 'off',
     screenshot: 'only-on-failure',
   },

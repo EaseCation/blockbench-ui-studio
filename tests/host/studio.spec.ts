@@ -710,6 +710,9 @@ test('原生 Frame 复制继承布局尺寸和子图层规则', async ({ page })
       child = app.add('image', frame);
     app.makeNine(child);
     app.update(frame, (n: any) => {
+      // This fixture tests a fixed reference parent distributing Fill to its child.
+      n.layout.width = { kind: 'fixed', value: 160 };
+      n.layout.height = { kind: 'fixed', value: 90 };
       n.frame.direction = 'row';
       n.frame.engineType = 'stack_panel';
       n.frame.padding = [4, 4, 4, 4];
@@ -1078,7 +1081,8 @@ test('多选边距只改一边；尺寸快捷规则、锚点和约束折叠', as
     app.select([app.state.selection[0]]);
   });
   await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
-  await page.getByLabel('宽度模式', { exact: true }).selectOption('fill');
+  await page.locator('[data-size-editor=visual]').click();
+  await page.getByLabel('宽度参照', { exact: true }).selectOption('fill');
   expect(
     await page.evaluate(() => {
       const app = window.Blockbench.mcuiStudio.getStudio();
@@ -1140,9 +1144,11 @@ test('尺寸策略预检、键盘方向操作和切回自由布局保持位置',
     app.select([root]);
   });
   await page.locator('.panel_handle[panel_id="mcui_layout"]').click();
-  await expect(
-    page.locator('#panel_mcui_layout select[aria-label=宽度模式] option[value=expression]'),
-  ).toHaveAttribute('disabled', '');
+  const width = page.getByLabel('布局宽度', { exact: true });
+  await width.fill('100%');
+  await width.press('Enter');
+  await expect(width).toHaveAttribute('aria-invalid', 'true');
+  await width.press('Escape');
   await page.locator('#panel_mcui_layout button[data-flow="row"]').click();
   const middle = page.getByRole('button', { name: '子项对齐：中中', exact: true });
   await middle.focus();

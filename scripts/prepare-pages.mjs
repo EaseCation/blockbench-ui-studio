@@ -14,6 +14,13 @@ await copyFile(plugin, new URL('mcui_studio.js', site));
 await copyFile(plugin, new URL('latest.js', site));
 await copyFile(new URL('dist/mcui_studio.js.map', root), new URL('mcui_studio.js.map', site));
 await copyFile(new URL('LICENSE', root), new URL('LICENSE', site));
+await copyFile(new URL('THIRD_PARTY_NOTICES.md', root), new URL('THIRD_PARTY_NOTICES.md', site));
+await mkdir(new URL('licenses/', site), { recursive: true });
+await copyFile(
+  new URL('licenses/penpot-MPL-2.0.txt', root),
+  new URL('licenses/penpot-MPL-2.0.txt', site),
+);
+await copyFile(new URL('src/presentation/assets/rotate.svg', root), new URL('rotate.svg', site));
 await writeFile(new URL('.nojekyll', site), '');
 await writeFile(
   new URL('version.json', site),
@@ -55,7 +62,7 @@ await writeFile(
     <li><a href="https://github.com/EaseCation/blockbench-ui-studio">源代码与使用说明</a></li>
   </ul>
   <p>可编辑文字可配合 <a href="https://easecation.github.io/blockbench-bbmodel-text/">BBModel Text Component</a> 使用。</p>
-  <p><a href="./LICENSE">MIT License</a></p>
+  <p><a href="./LICENSE">MIT License</a> · <a href="./THIRD_PARTY_NOTICES.md">Third-party notices</a> · <a href="./rotate.svg">Rotation cursor source</a></p>
 </body>
 </html>
 `,

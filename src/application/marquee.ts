@@ -1,13 +1,8 @@
-import { contains, intersects } from '../domain/geometry';
+import { corners, polygonContains, polygonsIntersect } from '../domain/transform';
+import { contains } from '../domain/geometry';
 import { topSelection } from '../domain/document';
 import type { Id, Point, Rect, UiDocument } from '../domain/types';
 import type { PickNode } from './targets';
-
-const encloses = (outer: Rect, inner: Rect) =>
-  inner.x >= outer.x - 0.01 &&
-  inner.y >= outer.y - 0.01 &&
-  inner.x + inner.width <= outer.x + outer.width + 0.01 &&
-  inner.y + inner.height <= outer.y + outer.height + 0.01;
 
 /** Scope is a containing container, never a plain drawable leaf under the pointer. */
 export function marqueeScope(doc: UiDocument, nodes: PickNode[], start: Point): Id | null {
@@ -17,7 +12,7 @@ export function marqueeScope(doc: UiDocument, nodes: PickNode[], start: Point): 
         (n) =>
           !n.disabled &&
           (n.kind === 'frame' || doc.nodes[n.id]!.children.length > 0) &&
-          contains(n.rect, start),
+          polygonContains(n.polygon ?? corners(n.rect), start),
       )
       .sort((a, b) => b.level - a.level || b.rank - a.rank)[0]?.id ?? null
   );
@@ -49,7 +44,13 @@ export function selectMarquee(
   }
   let scope = initialScope;
   // Crossing the starting container expands to the common outer scope.
-  while (scope && (!byId.has(scope) || !encloses(byId.get(scope)!.rect, rect)))
+  while (
+    scope &&
+    (!byId.has(scope) ||
+      !corners(rect).every((p) =>
+        polygonContains(byId.get(scope!)!.polygon ?? corners(byId.get(scope!)!.rect), p),
+      ))
+  )
     scope = doc.nodes[scope]?.parent ?? null;
   if (!deep && previous.length) {
     const within = (id: Id, ancestor: Id) => {
@@ -67,7 +68,9 @@ export function selectMarquee(
       (n) =>
         eligible.has(n.id) &&
         !excluded.has(n.id) &&
-        (n.kind === 'image' ? intersects(rect, n.rect) : encloses(rect, n.rect)),
+        (n.kind === 'image'
+          ? polygonsIntersect(corners(rect), n.polygon ?? corners(n.rect))
+          : (n.polygon ?? corners(n.rect)).every((p) => contains(rect, p))),
     )
     .map((n) => n.id);
   let selected: Id[];

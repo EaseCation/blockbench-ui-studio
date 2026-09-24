@@ -1,5 +1,11 @@
+import { SnapSession, snapReferences, type SnapGuide } from '../../application/snapping';
+import type { InputPoint } from '../../application/interaction';
+import type { UiDocument } from '../../domain/types';
+import { corners, center, around, pointBounds } from '../../domain/transform';
+import { pinchZoom, wheelZoom } from '../../application/zoom';
 import { marqueeScope, selectMarquee } from '../../application/marquee';
 import { BindingIndex } from './binding-index';
+import { SelectionView } from './selection-view';
 import { UiGrid } from './ui-grid';
 import {
   pickNode,
@@ -10,6 +16,7 @@ import {
 } from '../../application/targets';
 import {
   DrawingMachine,
+  drawingRect,
   previewDrawing,
   type DrawKind,
   type DrawingPoint,
@@ -40,14 +47,19 @@ export interface ViewMemory {
 export class ViewportController {
   private disposables = new Disposables();
   private grid: UiGrid;
+  private selectionView: SelectionView;
   private previews = new Map<
     HostObject,
     { root: HTMLElement; cleanup: Disposables; last: string }
   >();
   private space = false;
+  private control = false;
   private hover: Id | null = null;
   private dropTarget: DropTarget | null = null;
   automaticPlacement = true;
+  smartSnapping = true;
+  private snapGuides: SnapGuide[] = [];
+  private snapCache: { doc: UiDocument; key: string; session: SnapSession } | null = null;
   private labelContext = document.createElement('canvas').getContext('2d');
   private alt = false;
   private pointerId: number | null = null;
@@ -65,7 +77,9 @@ export class ViewportController {
     pointer: number;
   } | null = null;
   private machine: InteractionMachine;
-  private drawing = new DrawingMachine();
+  private drawing = new DrawingMachine((rect, origin, point) =>
+    this.snapDrawing(rect, origin, point),
+  );
   private drawingTools: Partial<Record<DrawKind, HostObject>> = {};
   private drawingPreview: HostObject | null = null;
   private drawingTarget: DropTarget | null = null;
@@ -82,6 +96,7 @@ export class ViewportController {
     private memory: ViewMemory = { views: {} },
   ) {
     this.grid = new UiGrid(bb);
+    this.selectionView = new SelectionView(bb, studio);
     this.originalCamera = this.capture();
     this.originalTool = bb.Toolbox.selected;
     this.projectId = bb.Project.uuid;
@@ -155,7 +170,11 @@ export class ViewportController {
           }
       }),
     );
-    this.machine = new InteractionMachine(studio, { pan: (dx, dy) => this.pan(dx, dy) });
+    this.machine = new InteractionMachine(studio, {
+      pan: (dx, dy) => this.pan(dx, dy),
+      snapMove: (rect, delta, input) => this.snapMove(rect, delta, input),
+      clearSnap: () => this.clearSnapping(),
+    });
     this.disposables.add(
       studio.subscribe(() => {
         if (this.drawing.request) this.updateDrawing();
@@ -206,6 +225,7 @@ export class ViewportController {
     this.disposables.listen(window, 'blur', () => {
       this.space = false;
       this.alt = false;
+      this.control = false;
       this.cancelInput();
       this.draw();
     });
@@ -256,20 +276,23 @@ export class ViewportController {
     this.syncTool();
     this.draw();
   }
-  shortcutsAvailable(allowMenu = false) {
+  hasInputGesture() {
     return (
-      this.drawingContext(allowMenu) &&
-      this.pointerId === null &&
-      !this.drawing.request &&
-      !this.bb.Preview.selected?.selection?.sr_move_f
+      this.pointerId !== null ||
+      !!this.drawing.request ||
+      !!this.nativeMarquee ||
+      !!this.bb.Preview.selected?.selection?.sr_move_f
     );
+  }
+  shortcutsAvailable(allowMenu = false) {
+    return this.drawingContext(allowMenu) && !this.hasInputGesture();
   }
   fit(selectionOnly = false) {
     const p = this.bb.Preview.selected;
     const rect = bounds(
       Object.values(this.studio.state.scene.nodes)
         .filter((n) => n.visible && (!selectionOnly || this.studio.state.selection.includes(n.id)))
-        .map((n) => n.rect),
+        .map((n) => n.bounds ?? n.rect),
     );
     if (!rect || !p.isOrtho) return;
     p.camera.zoom = Math.min(
@@ -280,6 +303,104 @@ export class ViewportController {
     p.camera.position.z = p.controls.target.z = rect.y + rect.height / 2;
     p.camera.updateProjectionMatrix();
     p.controls.update();
+  }
+  setSmartSnapping(value: boolean) {
+    this.cancelInput();
+    this.smartSnapping = value;
+    this.draw();
+  }
+  private clearSnapping() {
+    this.snapGuides = [];
+    this.snapCache = null;
+  }
+  private snapSession(ids: Id[], parent?: Id | null) {
+    const { doc, scene } = this.studio.state,
+      key = JSON.stringify([ids, parent]);
+    if (!this.snapCache || this.snapCache.doc !== doc || this.snapCache.key !== key)
+      this.snapCache = {
+        doc,
+        key,
+        session: new SnapSession(snapReferences(doc, scene, ids, parent)),
+      };
+    return this.snapCache.session;
+  }
+  private snapDistance() {
+    const p = this.projector(this.bb.Preview.selected),
+      a = p.project({ x: 0, y: 0 }),
+      b = p.project({ x: 1, y: 0 });
+    return 6 / Math.max(0.001, Math.hypot(b.x - a.x, b.y - a.y));
+  }
+  private snapMove(rect: Rect, delta: Point, input: InputPoint): Point {
+    const raw = { x: Math.round(delta.x), y: Math.round(delta.y) },
+      doc = this.studio.state.doc,
+      ids = this.studio.state.selection;
+    const target = input.drop?.parentId;
+    const flow = ids.some((id) => {
+      const n = doc.nodes[id]!;
+      return (
+        n.parent &&
+        doc.nodes[n.parent]?.frame?.engineType === 'stack_panel' &&
+        n.layout.positioning === 'flow' &&
+        (!target || target === n.parent)
+      );
+    });
+    if (
+      !this.smartSnapping ||
+      input.control ||
+      input.inside === false ||
+      flow ||
+      (target && doc.nodes[target]?.frame?.engineType === 'stack_panel') ||
+      this.bb.Preview.selected.angle !== 'top'
+    ) {
+      this.clearSnapping();
+      return raw;
+    }
+    const session = this.snapSession(ids, target),
+      threshold = this.snapDistance();
+    const moved = { ...rect, x: rect.x + raw.x, y: rect.y + raw.y },
+      correction = session.align(moved, threshold);
+    this.snapGuides = session.guides(
+      { ...moved, x: moved.x + correction.x, y: moved.y + correction.y },
+      threshold * 0.7,
+    );
+    return { x: raw.x + correction.x, y: raw.y + correction.y };
+  }
+  private snapDrawing(rect: Rect, origin: Point, point: DrawingPoint): Rect {
+    const parent = this.drawing.request?.target?.parentId ?? null;
+    if (
+      !this.smartSnapping ||
+      point.control ||
+      point.shift ||
+      point.alt ||
+      point.space ||
+      point.inside === false ||
+      (parent && this.studio.state.doc.nodes[parent]?.frame?.engineType === 'stack_panel')
+    ) {
+      this.clearSnapping();
+      return rect;
+    }
+    const x = point.world.x < origin.x ? 0 : 1,
+      y = point.world.y < origin.y ? 0 : 1;
+    const session = this.snapSession([], parent),
+      threshold = this.snapDistance();
+    const correction = session.align(rect, threshold, {
+      x: [x],
+      y: [y],
+      accept: (axis, d) => {
+        const side = axis === 'x' ? x : y,
+          end = rect[axis] + (axis === 'x' ? rect.width : rect.height) * side + d,
+          start = Math.round(origin[axis]);
+        return Math.abs(end - Math.round(end)) < 1e-6 && (side ? end - start : start - end) >= 1;
+      },
+    });
+    const result = drawingRect(
+      origin,
+      { x: point.world.x + correction.x, y: point.world.y + correction.y },
+      false,
+      false,
+    );
+    this.snapGuides = session.guides(result, threshold * 0.7);
+    return result;
   }
   setAutomaticPlacement(value: boolean) {
     this.cancelInput();
@@ -332,6 +453,7 @@ export class ViewportController {
     return this.drawingContext() && !!this.drawingKind();
   }
   private cancelInput() {
+    this.clearSnapping();
     this.cancelNativeMarquee();
     this.machine?.cancel();
     this.drawing.cancel();
@@ -348,7 +470,11 @@ export class ViewportController {
         if (p.node.hasPointerCapture(pointer)) p.node.releasePointerCapture(pointer);
   }
   private drawingPoint(e: PointerEvent, p: HostObject): DrawingPoint {
+    const r = p.canvas.getBoundingClientRect();
     return {
+      control: e.ctrlKey,
+      inside:
+        e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom,
       world: this.world(e.clientX, e.clientY, p),
       screen: { x: e.clientX, y: e.clientY },
       shift: e.shiftKey,
@@ -453,25 +579,18 @@ export class ViewportController {
     const nodes = scene.order.map((id) => {
       const n = doc.nodes[id]!,
         resolved = scene.nodes[id]!,
-        a = projection.project(resolved.rect),
-        b = projection.project({
-          x: resolved.rect.x + resolved.rect.width,
-          y: resolved.rect.y + resolved.rect.height,
-        }),
-        rect = {
-          x: Math.min(a.x, b.x),
-          y: Math.min(a.y, b.y),
-          width: Math.abs(b.x - a.x),
-          height: Math.abs(b.y - a.y),
-        };
+        polygon = (resolved.corners ?? corners(resolved.rect)).map((point) =>
+          projection.project(point),
+        ),
+        rect = pointBounds(polygon);
       let level = 0,
         parent = n.parent;
       while (parent) {
         level++;
         parent = doc.nodes[parent]?.parent ?? null;
       }
-      const label =
-        n.kind === 'frame' && !n.parent
+      const labelBox =
+        n.kind === 'frame' && !n.parent && rect.width > 0 && rect.height > 0
           ? {
               x: rect.x + 2,
               y: rect.y - 22,
@@ -485,11 +604,32 @@ export class ViewportController {
               height: 20,
             }
           : undefined;
+      let labelAngle = 0,
+        labelPolygon: Point[] | undefined;
+      if (labelBox) {
+        const origin = polygon[0]!,
+          top = polygon[1]!,
+          left = polygon[3]!;
+        const w = Math.hypot(top.x - origin.x, top.y - origin.y),
+          h = Math.hypot(left.x - origin.x, left.y - origin.y);
+        const ux = (top.x - origin.x) / w,
+          uy = (top.y - origin.y) / w,
+          vx = (left.x - origin.x) / h,
+          vy = (left.y - origin.y) / h;
+        labelBox.x = origin.x + 2 * ux - 22 * vx;
+        labelBox.y = origin.y + 2 * uy - 22 * vy;
+        labelAngle = (Math.atan2(uy, ux) * 180) / Math.PI;
+        labelPolygon = corners(labelBox, around(labelBox, -labelAngle));
+      }
       return {
         id,
         kind: n.kind,
         rect,
-        label,
+        polygon,
+        label: labelPolygon ? pointBounds(labelPolygon) : undefined,
+        labelBox,
+        labelAngle,
+        labelPolygon,
         rank: resolved.depth,
         level,
         disabled: !resolved.visible || resolved.locked || !!n.suspended,
@@ -498,8 +638,14 @@ export class ViewportController {
     this.picks.set(preview, { doc, scene, key, nodes });
     return nodes;
   }
-  private hit(event: MouseEvent, preview: HostObject): Id | null {
-    return pickNode(this.pickNodes(preview), this.local(event, preview));
+  private hit(event: MouseEvent, preview: HostObject, preferSelection = true): Id | null {
+    return pickNode(
+      this.pickNodes(preview),
+      this.local(event, preview),
+      preferSelection && !event.shiftKey && !this.deepModifier(event)
+        ? this.studio.state.selection
+        : [],
+    );
   }
   private deepModifier(e: MouseEvent | KeyboardEvent) {
     return this.bb.Blockbench.platform === 'darwin' || navigator.userAgent.includes('Mac OS')
@@ -668,7 +814,7 @@ export class ViewportController {
       e.clientY >= rect.top &&
       e.clientY <= rect.bottom;
     this.dropTarget =
-      inside && this.machine.phase !== 'resize'
+      inside && this.machine.phase !== 'resize' && this.machine.phase !== 'rotate'
         ? pickDrop(
             this.studio.state.doc,
             this.pickNodes(preview),
@@ -679,6 +825,8 @@ export class ViewportController {
         : null;
     return {
       drop: this.dropTarget,
+      control: e.ctrlKey,
+      inside,
       screen: { x: e.clientX, y: e.clientY },
       world,
       button: e.button,
@@ -686,6 +834,7 @@ export class ViewportController {
       alt: e.altKey,
       space: this.space,
       hit: this.hit(e, preview),
+      rotate: (e.target as HTMLElement).hasAttribute?.('data-mcui-rotate'),
       handle: (e.target as HTMLElement).getAttribute?.('data-mcui-handle') as Handle | undefined,
     };
   }
@@ -756,7 +905,9 @@ export class ViewportController {
             e.button === 2
           )
             return;
-          const handle = (e.target as HTMLElement).getAttribute?.('data-mcui-handle');
+          const handle =
+            (e.target as HTMLElement).getAttribute?.('data-mcui-handle') ||
+            (e.target as HTMLElement).hasAttribute?.('data-mcui-rotate');
           if (
             !handle &&
             this.active() &&
@@ -824,7 +975,9 @@ export class ViewportController {
               return;
             }
             if (this.active()) {
-              this.hover = this.hit(e, p);
+              this.hover = (e.target as Element).closest?.('[data-mcui-rotate],[data-mcui-handle]')
+                ? null
+                : this.hit(e, p, !e.altKey);
               this.alt = e.altKey;
               this.draw();
             }
@@ -882,6 +1035,7 @@ export class ViewportController {
         { capture: true },
       );
       cleanup.listen(p.node, 'pointerleave', () => {
+        this.clearSnapping();
         this.hover = null;
         this.dropTarget = null;
         if (!this.drawing.request) this.drawingTarget = null;
@@ -930,7 +1084,7 @@ export class ViewportController {
         ((e: MouseEvent) => {
           if (!this.active()) return;
           stop(e);
-          const id = this.hit(e, p);
+          const id = this.hit(e, p, false);
           if (id) {
             this.studio.select([id]);
             this.studio.paint(id);
@@ -946,14 +1100,18 @@ export class ViewportController {
           if (!this.navigationActive()) return;
           this.bb.Preview.selected = p;
           stop(e);
-          if (this.drawing.request || this.nativeMarquee) return;
+          if (this.drawing.request || this.nativeMarquee || this.pointerId !== null) return;
           const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? p.height : 1;
           if (e.ctrlKey) {
             const before = this.world(e.clientX, e.clientY, p);
-            p.camera.zoom = Math.max(
-              0.02,
-              Math.min(1000, p.camera.zoom * Math.exp(-e.deltaY * unit * 0.01)),
-            );
+            // Chromium pinch adds ctrlKey without a physical Control keydown.
+            // Delta magnitude alone cannot distinguish high-resolution wheels from pinch.
+            const mac =
+              this.bb.Blockbench.platform === 'darwin' || navigator.userAgent.includes('Mac OS');
+            const pinch = mac && e.deltaMode === 0 && !this.control;
+            p.camera.zoom = pinch
+              ? pinchZoom(p.camera.zoom, e.deltaY)
+              : wheelZoom(p.camera.zoom, e.deltaY, e.deltaMode, p.height);
             p.camera.updateProjectionMatrix();
             const after = this.world(e.clientX, e.clientY, p);
             p.camera.position.x += before.x - after.x;
@@ -969,6 +1127,8 @@ export class ViewportController {
     }
   }
   private key(e: KeyboardEvent, down: boolean) {
+    // Track real modifiers even while an input or another panel owns keyboard focus.
+    this.control = e.key === 'Control' ? down : e.ctrlKey;
     // Release temporary modifiers even if a dialog/input gained focus after keydown.
     if (!down && e.code === 'Space') this.space = false;
     if (!down && e.key === 'Alt') this.alt = false;
@@ -978,7 +1138,8 @@ export class ViewportController {
       this.bb.open_interface ||
       this.bb.open_menu ||
       !this.navigationActive() ||
-      (!this.drawingActive() &&
+      (this.pointerId === null &&
+        !this.drawingActive() &&
         !['preview', 'outliner', 'element', 'transform'].includes(this.bb.Prop.active_panel))
     )
       return;
@@ -1002,9 +1163,13 @@ export class ViewportController {
       e.preventDefault();
       e.stopImmediatePropagation();
     }
-    if (this.drawingActive() && ['Shift', 'Alt', ' '].includes(e.key)) {
-      this.drawing.modifiers(e.shiftKey, e.altKey, this.space);
+    if (this.drawingActive() && ['Shift', 'Alt', ' ', 'Control'].includes(e.key)) {
+      this.drawing.modifiers(e.shiftKey, e.altKey, this.space, e.ctrlKey);
       this.updateDrawing();
+      this.draw();
+    }
+    if (this.active() && ['Shift', 'Alt', 'Control'].includes(e.key) && this.pointerId !== null) {
+      this.machine.modifiers(e.shiftKey, e.altKey, e.ctrlKey);
       this.draw();
     }
     if (e.key === 'Alt' && this.active()) {
@@ -1037,6 +1202,10 @@ export class ViewportController {
       return;
     }
     if (e.key === 'Escape') {
+      if (this.pointerId !== null) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
       const p = this.bb.Preview.selected;
       if (p.selection.sr_move_f) {
         this.bb.Undo.cancelSelection(true);
@@ -1067,6 +1236,7 @@ export class ViewportController {
     if (this.drawing.request && !this.drawingContext()) this.cancelInput();
     this.memory.views[this.currentView] = this.capture();
     this.grid.update(this.studio.state.view === '2d');
+    this.selectionView.update(this.active() && this.bb.Preview.selected?.angle === 'top');
     for (const [p, entry] of this.previews) {
       if (this.studio.state.view !== '2d' || !p.isOrtho || p.angle !== 'top') {
         if (entry.last) {
@@ -1075,7 +1245,16 @@ export class ViewportController {
         }
         continue;
       }
-      const originalSelection = this.active() ? this.studio.getSelectionBounds() : null;
+      const projection = this.projector(p),
+        project = projection.project;
+      const projectRect = (rect: Rect) => pointBounds(corners(rect).map(project));
+      const selectionBox = this.active()
+        ? (this.machine.rotationBox ?? this.studio.getSelectionBox())
+        : null;
+      const originalSelection =
+        selectionBox && selectionBox.rect.width > 0 && selectionBox.rect.height > 0
+          ? selectionBox.rect
+          : null;
       const delta = this.studio.movePreview;
       const selection =
         originalSelection && delta
@@ -1104,28 +1283,61 @@ export class ViewportController {
         selection && this.alt && this.hover && !this.studio.state.selection.includes(this.hover)
           ? distances(selection, this.studio.state.scene.nodes[this.hover]!.rect)
           : [];
-      const origin = this.screen({ x: 0, y: 0 }, p),
-        unit = this.screen({ x: 1, y: 1 }, p);
+      const origin = project({ x: 0, y: 0 }),
+        unit = project({ x: 1, y: 1 });
       const spacing = Math.abs(unit.x - origin.x);
       const request = drawing && this.drawingPreview === p ? this.drawing.request : null;
+      const shifted = (id: Id, rect: Rect): Rect => {
+        if (!delta || !this.studio.state.selection.includes(id)) return rect;
+        const before = project({ x: 0, y: 0 }),
+          after = project(delta);
+        return { ...rect, x: rect.x + after.x - before.x, y: rect.y + after.y - before.y };
+      };
+      const visualCorners = selection
+        ? corners(selection, around(center(selection), selectionBox?.rotation ?? 0)).map((point) =>
+            project(point),
+          )
+        : [];
+      const c = selection ? project(center(selection)) : { x: 0, y: 0 };
+      const w = visualCorners.length
+        ? Math.hypot(
+            visualCorners[1]!.x - visualCorners[0]!.x,
+            visualCorners[1]!.y - visualCorners[0]!.y,
+          )
+        : 0;
+      const h = visualCorners.length
+        ? Math.hypot(
+            visualCorners[3]!.x - visualCorners[0]!.x,
+            visualCorners[3]!.y - visualCorners[0]!.y,
+          )
+        : 0;
       const model = {
         creation: request
           ? {
-              rect: this.screenRect(request.rect, p),
-              placement: this.drawingPlacement ? this.screenRect(this.drawingPlacement, p) : null,
+              rect: projectRect(request.rect),
+              placement: this.drawingPlacement ? projectRect(this.drawingPlacement) : null,
               label: `${request.kind === 'frame' ? 'Frame' : 'Image'} · ${request.rect.width} × ${request.rect.height}px`,
               error: this.drawingError,
             }
           : null,
+        snapGuides:
+          this.active() || drawing
+            ? this.snapGuides.map((g) => ({ ...g, from: project(g.from), to: project(g.to) }))
+            : [],
         hover: hovered?.rect ?? null,
+        hoverPolygon: hovered?.polygon,
         labels:
           this.active() || drawing
             ? nodes
                 .filter((n) => !!n.label && this.studio.state.scene.nodes[n.id]?.visible)
                 .map((n) => ({
                   id: n.id,
-                  name: this.labelText(this.studio.state.doc.nodes[n.id]!.name, n.label!.width),
-                  rect: n.label!,
+                  name: this.labelText(
+                    this.studio.state.doc.nodes[n.id]!.name,
+                    (n.labelBox ?? n.label)!.width,
+                  ),
+                  rect: shifted(n.id, n.labelBox ?? n.label!),
+                  angle: n.labelAngle,
                 }))
             : [],
         drop:
@@ -1135,6 +1347,7 @@ export class ViewportController {
           (this.active() || drawing)
             ? {
                 rect: nodes.find((n) => n.id === drop.parentId)!.rect,
+                polygon: nodes.find((n) => n.id === drop.parentId)!.polygon,
                 name: this.studio.state.doc.nodes[drop.parentId]!.name,
                 line: drop.line,
               }
@@ -1145,12 +1358,33 @@ export class ViewportController {
             : null,
         width: p.width,
         height: p.height,
-        selection: selection ? this.screenRect(selection, p) : null,
+        selectedPolygons:
+          this.active() && this.studio.state.selection.length > 1
+            ? nodes
+                .filter((n) => this.studio.state.selection.includes(n.id))
+                .map((n) =>
+                  (n.polygon ?? corners(n.rect)).map((point) =>
+                    shifted(n.id, { ...point, width: 0, height: 0 }),
+                  ),
+                )
+            : [],
+        selection: selection ? { x: c.x - w / 2, y: c.y - h / 2, width: w, height: h } : null,
+        selectionAngle: visualCorners.length
+          ? (Math.atan2(
+              visualCorners[1]!.y - visualCorners[0]!.y,
+              visualCorners[1]!.x - visualCorners[0]!.x,
+            ) *
+              180) /
+            Math.PI
+          : 0,
+        rotationEnabled: this.studio.rotationGestureAllowed(),
+        rotationActive: this.machine.phase === 'rotate',
+        rotationValue: this.machine.rotationValue ?? 0,
         marquee: null,
         measurements: ms.map((m) => ({
           ...m,
-          from: this.screen(m.from, p),
-          to: this.screen(m.to, p),
+          from: project(m.from),
+          to: project(m.to),
         })),
       };
       const key = JSON.stringify(model);
@@ -1179,5 +1413,6 @@ export class ViewportController {
     if (this.bb.Project?.uuid === this.projectId) this.restore(this.originalCamera);
     this.disposables.dispose();
     this.grid.restore();
+    this.selectionView.dispose();
   }
 }

@@ -20,7 +20,8 @@ function fixture() {
 describe('布局解析与依赖', () => {
   it('支持百分比加减绝对像素，拒绝代码和未支持单位', () => {
     expect(parseSize('75% + 12px')).toEqual({ kind: 'expression', percent: 0.75, pixels: 12 });
-    expect(() => parseSize('100%cm')).toThrow();
+    expect(parseSize('100%cm')).toEqual({ kind: 'expression', unit: '%cm', percent: 1, pixels: 0 });
+    expect(() => parseSize('100%invalid')).toThrow();
     expect(() => parseSize('alert(1)')).toThrow();
   });
   it('父级尺寸改变，百分比子级自动变化', () => {

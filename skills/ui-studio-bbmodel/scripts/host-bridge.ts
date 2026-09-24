@@ -1,3 +1,5 @@
+import { applyResolvedLayout } from '../../../src/domain/auto-frame';
+import { normalizeAngle } from '../../../src/domain/transform';
 import { NativeHost } from '../../../src/adapters/blockbench/native-host';
 import { hostRuntime } from '../../../src/adapters/blockbench/runtime';
 import { Studio } from '../../../src/application/studio';
@@ -152,11 +154,13 @@ function designFromDoc(doc: UiDocument, name: string) {
       visible: n.visible,
       locked: n.locked,
       opacity: n.opacity,
+      rotation: n.rotation,
       x: formatOffset(n.layout.offsetPercent?.x ?? 0, n.layout.offset.x),
       y: formatOffset(n.layout.offsetPercent?.y ?? 0, n.layout.offset.y),
       width: formatSize(n.layout.width),
       height: formatSize(n.layout.height),
       positioning: n.layout.positioning,
+      subpixel: n.layout.subpixel,
       anchorFrom: n.layout.anchorFrom,
       anchorTo: n.layout.anchorTo,
       minWidth: n.layout.minWidth,
@@ -243,6 +247,7 @@ async function compileDesign(design: any, base: UiDocument | null): Promise<UiDo
         'locked',
         'opacity',
         'positioning',
+        'subpixel',
         'anchorFrom',
         'anchorTo',
         'minWidth',
@@ -257,6 +262,7 @@ async function compileDesign(design: any, base: UiDocument | null): Promise<UiDo
         'content',
         'appearance',
         'rasterSize',
+        'rotation',
         'children',
       ],
       'node',
@@ -268,14 +274,12 @@ async function compileDesign(design: any, base: UiDocument | null): Promise<UiDo
     const old = base?.nodes[id];
     if (old && old.kind !== spec.kind) fail('Changing node kind requires a new logical id');
     const n = createNode(id, spec.name ?? id, spec.kind, { x: 0, y: 0, width: 32, height: 32 });
+    if (old) n.rect = { ...old.rect };
     if (typeof n.name !== 'string') fail('node name must be text');
     doc.nodes[id] = n;
     n.parent = parent;
     for (const axis of ['width', 'height'] as const) {
-      const rule = parseSize(String(spec[axis] ?? 32));
-      if (!parent && (rule.kind === 'fill' || rule.kind === 'expression'))
-        fail(`${id}: root has no relative size reference`);
-      if (rule.kind === 'fixed' && rule.value < 1) fail('fixed size must be >= 1');
+      const rule = parseSize(String(spec[axis] ?? (spec.kind === 'frame' ? 'auto' : 32)));
       n.layout[axis] = rule;
     }
     for (const axis of ['x', 'y'] as const) {
@@ -285,17 +289,22 @@ async function compileDesign(design: any, base: UiDocument | null): Promise<UiDo
     }
     if (!old?.layout.offsetPercent && !n.layout.offsetPercent?.x && !n.layout.offsetPercent?.y)
       delete n.layout.offsetPercent;
+    if (spec.subpixel !== undefined) {
+      if (typeof spec.subpixel !== 'boolean') fail('subpixel must be boolean');
+      n.layout.subpixel = spec.subpixel;
+    }
     n.layout.positioning = choice(spec.positioning ?? 'flow', ['flow', 'absolute'], 'positioning');
     n.layout.anchorFrom = anchor(spec.anchorFrom ?? [0, 0]) as [number, number];
     n.layout.anchorTo = anchor(spec.anchorTo ?? [0, 0]) as [number, number];
     for (const k of ['minWidth', 'minHeight', 'maxWidth', 'maxHeight'] as const)
-      if (spec[k] !== undefined) n.layout[k] = number(spec[k], k, 1);
+      if (spec[k] !== undefined) n.layout[k] = number(spec[k], k, 0);
     for (const k of ['visible', 'locked'] as const)
       if (spec[k] !== undefined) {
         if (typeof spec[k] !== 'boolean') fail(k + ' must be boolean');
         n[k] = spec[k];
       }
     n.opacity = number(spec.opacity ?? 1, 'opacity', 0);
+    if (spec.rotation !== undefined) n.rotation = normalizeAngle(number(spec.rotation, 'rotation'));
     if (n.opacity > 1) fail('opacity must be <= 1');
     if (n.kind === 'frame') {
       if (spec.content || spec.appearance || spec.rasterSize)
@@ -516,8 +525,8 @@ async function preview(
     region ??
     bounds(
       Object.values(scene.nodes)
-        .filter((n) => n.visible)
-        .map((n) => n.rect),
+        .filter((n) => n.visible && n.rect.width > 0 && n.rect.height > 0)
+        .map((n) => n.bounds ?? n.rect),
     );
   if (!rect) return null;
   if (rect.width * rect.height * scale * scale > 16_777_216)
@@ -533,8 +542,16 @@ async function preview(
       r = scene.nodes[id]!;
     if (!n.content || !r.visible) continue;
     const t = bb.Project.textures.find((t: any) => t.uuid === doc.bindings[id]?.textureId);
-    if (t)
-      ctx.drawImage(t.canvas, r.rect.x - rect.x, r.rect.y - rect.y, r.rect.width, r.rect.height);
+    if (t) {
+      ctx.save();
+      ctx.translate(-rect.x, -rect.y);
+      if (r.transform) {
+        ctx.translate(r.transform.x, r.transform.y);
+        ctx.rotate((-r.transform.angle * Math.PI) / 180);
+      }
+      ctx.drawImage(t.canvas, r.rect.x, r.rect.y, r.rect.width, r.rect.height);
+      ctx.restore();
+    }
   }
   return { png: canvas.toDataURL(), bounds: rect };
 }
@@ -591,10 +608,14 @@ export async function run(request: any): Promise<any> {
     bitmaps: Record<string, Pixels> = {};
   let total = 0;
   const oldScene = base ? layout(base) : null;
+  applyResolvedLayout(doc, scene);
   for (const id of scene.order) {
     const n = doc.nodes[id]!;
-    n.rect = { ...scene.nodes[id]!.rect };
     if (!n.content) continue;
+    if (n.rect.width === 0 || n.rect.height === 0) {
+      if (!doc.bindings[id]?.textureId) bitmaps[id] = blank(1, 1);
+      continue;
+    }
     if (n.content.kind === 'generated') {
       const c = n.content,
         p = contentProviders.get(c.provider);
@@ -646,6 +667,7 @@ export async function run(request: any): Promise<any> {
         n.locked !== old.locked ||
         !same(n.children, old.children) ||
         n.opacity !== old.opacity ||
+        (n.rotation ?? 0) !== (old.rotation ?? 0) ||
         n.parent !== old.parent ||
         scene.nodes[id]!.depth !== oldScene?.nodes[id]?.depth ||
         !same(doc.assets[n.content.source], base!.assets[n.content.source])

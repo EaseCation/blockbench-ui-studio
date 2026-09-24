@@ -1,3 +1,4 @@
+import { applyResolvedLayout } from '../../src/domain/auto-frame';
 import { it, expect } from 'vitest';
 import { createDocument, createNode, fixed } from '../../src/domain/types';
 import { groupNodes, ungroupNodes } from '../../src/domain/grouping';
@@ -26,7 +27,7 @@ function fixture() {
 }
 function resolve(d: ReturnType<typeof createDocument>) {
   const s = layout(d);
-  for (const id of s.order) d.nodes[id]!.rect = { ...s.nodes[id]!.rect };
+  applyResolvedLayout(d, s);
   return s;
 }
 it('不同父级的选区放入公共祖先的Frame，内部顺序和世界边界不变', () => {
@@ -50,7 +51,9 @@ it('百分比与锚点重算像素项；单个Image可编组再解除', () => {
   resolve(d);
   expect(d.nodes.a!.rect).toEqual(before);
   expect(d.nodes.a!.layout.offsetPercent).toEqual({ x: 0.25, y: 0.1 });
-  expect(d.nodes.a!.layout.width).toMatchObject({ kind: 'expression', percent: 0.5 });
+  // A newly grouped Auto parent cannot be the basis of the child's percentage size.
+  expect(d.nodes.a!.layout.width).toEqual({ kind: 'fixed', value: before.width });
+  expect(d.nodes.group!.layout.width.kind).toBe('auto');
   ungroupNodes(d, ['group']);
   resolve(d);
   expect(d.nodes.a!.rect).toEqual(before);
